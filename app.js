@@ -1,20 +1,17 @@
 const input = document.querySelector('#sourceInput');
-const footnoteInput = document.querySelector('#footnoteInput');
+const searchScopeControls = document.querySelectorAll('input[name="searchScope"]');
+const footnoteInput = document.querySelector('#footnoteInput') || input;
 const discoverBtn = document.querySelector('#discoverBtn');
 const footnoteBtn = document.querySelector('#footnoteBtn');
 const clearBtn = document.querySelector('#clearBtn');
 const results = document.querySelector('#results');
-const emptyState = document.querySelector('#emptyState');
 const detectStatus = document.querySelector('#detectStatus');
 const candidateList = document.querySelector('#candidateList');
+const enrichSummary = document.querySelector('#enrichSummary');
 const libraryCount = document.querySelector('#libraryCount');
 const libraryUpdated = document.querySelector('#libraryUpdated');
 const preparedFilePath = document.querySelector('#preparedFilePath');
 const storageMode = document.querySelector('#storageMode');
-const googleLoginBtn = document.querySelector('#googleLoginBtn');
-const googleConfig = document.querySelector('#googleConfig');
-const googleClientInput = document.querySelector('#googleClientInput');
-const saveGoogleClient = document.querySelector('#saveGoogleClient');
 const themeToggle = document.querySelector('#themeToggle');
 const librarySelector = document.querySelector('#librarySelector');
 const libraryHistory = document.querySelector('#libraryHistory');
@@ -28,6 +25,7 @@ const clearLibrarySelection = document.querySelector('#clearLibrarySelection');
 const applyLibrarySelection = document.querySelector('#applyLibrarySelection');
 const deleteSelectedLibrary = document.querySelector('#deleteSelectedLibrary');
 const closeLibraryEditor = document.querySelector('#closeLibraryEditor');
+const traditionalOutput = document.querySelector('#traditionalOutput');
 const buildBibliographyBtn = document.querySelector('#buildBibliographyBtn');
 const bibliographyOutput = document.querySelector('#bibliographyOutput');
 const copyBibliographyBtn = document.querySelector('#copyBibliographyBtn');
@@ -47,17 +45,13 @@ let libraryState = { updatedAt: '', items: [] };
 let editorSelectedKeys = new Set();
 const cookieKey = 'cookie-session-library';
 const selectedRefsKey = 'cookie-selected-references';
-const firebaseConfig = window.RESEARCH_MASTER_FIREBASE_CONFIG || {};
-let firebaseApp = null;
-let firebaseAuth = null;
-let firebaseDb = null;
-let firebaseModules = null;
-let firebaseUser = null;
+const translationCacheKey = 'cookie-title-translation-cache';
 const authState = {
   mode: 'cookie',
-  cloudFiles: JSON.parse(sessionStorage.getItem('cookie-firebase-files') || '{}'),
+  cloudFiles: {},
 };
 let selectedRefKeys = new Set(JSON.parse(sessionStorage.getItem(selectedRefsKey) || '[]'));
+let translationCache = JSON.parse(sessionStorage.getItem(translationCacheKey) || '{}');
 
 const typeLabels = {
   article: '期刊論文',
@@ -82,8 +76,92 @@ const missingLabels = {
   place: '出版地',
 };
 
+const knownAuthorAliases = {
+  '莫大華': ['Mo Ta-hua', 'Ta-hua Mo', 'Ta Hua Mo', 'Mo Ta Hua', 'Mo Dahua', 'Ta-Hua Mo'],
+  '莫大王': ['莫大華', 'Mo Ta-hua', 'Ta-hua Mo', 'Ta Hua Mo', 'Mo Ta Hua', 'Mo Dahua', 'Ta-Hua Mo'],
+  '莫大方': ['莫大華', 'Mo Ta-hua', 'Ta-hua Mo', 'Ta Hua Mo', 'Mo Ta Hua', 'Mo Dahua', 'Ta-Hua Mo'],
+  '洪路遜': ['洪陸訓', 'Hung Lu-hsun', 'Lu-hsun Hung', 'Lu Hsun Hung', 'Hung Lu Hsun'],
+  '洪陸訓': ['洪路遜', 'Hung Lu-hsun', 'Lu-hsun Hung', 'Lu Hsun Hung', 'Hung Lu Hsun'],
+};
+
+const publisherPlaceHints = [
+  [/五南|wunan/i, '臺北'],
+  [/遠流|yuan[-\s]?liou/i, '臺北'],
+  [/聯經|linking/i, '臺北'],
+  [/揚智|yang[-\s]?chih/i, '臺北'],
+  [/元照/i, '臺北'],
+  [/三民/i, '臺北'],
+  [/群學/i, '臺北'],
+  [/巨流/i, '高雄'],
+  [/國立政治大學|政大|national chengchi/i, '臺北'],
+  [/國防大學|national defense university/i, '桃園'],
+  [/中華民國政府出版品|government publications/i, '臺北'],
+];
+
+const curatedMetadataHints = [
+  {
+    keys: ['論析美國防止擴散安全提議的發展與展望', '論析美國防止擴散安全提儀的發展與展望'],
+    authors: ['莫大華'],
+    meta: {
+      source: '中文索引交叉補全',
+      sourcePriority: 96,
+      type: 'article',
+      title: '論析美國「防止擴散安全提議」的發展與展望',
+      authors: ['莫大華'],
+      year: '2004',
+      issued: '2004/7',
+      containerTitle: '遠景基金會季刊',
+      volume: '5',
+      issue: '3',
+      pages: '27-98',
+      language: 'zh-TW',
+      raw: { note: '由中文學術索引與來源頁書目線索交叉補全。' },
+    },
+  },
+];
+
+const simplifiedPhraseMap = [
+  ['中国大陆', '中國大陸'],
+  ['中国', '中國'],
+  ['台湾', '臺灣'],
+  ['台海', '臺海'],
+  ['国际关系', '國際關係'],
+  ['学术', '學術'],
+  ['论文', '論文'],
+  ['期刊', '期刊'],
+  ['参考文献', '參考文獻'],
+  ['数据库', '資料庫'],
+  ['图书馆', '圖書館'],
+  ['专书', '專書'],
+  ['著作', '著作'],
+  ['军事', '軍事'],
+  ['战略', '戰略'],
+  ['资讯', '資訊'],
+  ['权威', '權威'],
+  ['验证', '驗證'],
+  ['开放', '開放'],
+  ['搜寻', '搜尋'],
+  ['引用脉络', '引用脈絡'],
+];
+
+const traditionalPhraseMap = simplifiedPhraseMap.map(([simp, trad]) => [trad, simp]);
+
+const simplifiedCharMap = {
+  国: '國', 学: '學', 华: '華', 台: '臺', 湾: '灣', 陆: '陸', 书: '書', 图: '圖',
+  馆: '館', 术: '術', 论: '論', 文: '文', 题: '題', 问: '問', 关: '關', 系: '係',
+  对: '對', 与: '與', 体: '體', 会: '會', 经: '經', 济: '濟', 历: '歷', 史: '史',
+  政: '政', 军: '軍', 战: '戰', 略: '略', 门: '門', 发: '發', 展: '展', 后: '後',
+  续: '續', 资: '資', 讯: '訊', 证: '證', 验: '驗', 开: '開', 放: '放', 搜: '搜',
+  寻: '尋', 录: '錄', 参: '參', 专: '專', 著: '著', 权: '權', 威: '威', 缺: '缺',
+  失: '失', 字: '字', 段: '段', 页: '頁', 码: '碼', 编: '編', 译: '譯', 导: '導',
+  向: '向', 云: '雲', 端: '端', 优: '優', 化: '化', 联: '聯', 网: '網', 路: '路',
+  系: '系', 统: '統', 繁: '繁', 简: '簡', 转: '轉', 换: '換',
+};
+
+const traditionalCharMap = Object.fromEntries(Object.entries(simplifiedCharMap).map(([simp, trad]) => [trad, simp]));
+
 discoverBtn.addEventListener('click', () => discover());
-footnoteBtn.addEventListener('click', () => parseFootnotes());
+footnoteBtn?.addEventListener('click', () => parseFootnotes());
 clearBtn.addEventListener('click', () => {
   input.value = '';
   items = [];
@@ -92,8 +170,14 @@ clearBtn.addEventListener('click', () => {
   render();
 });
 input.addEventListener('input', scheduleLiveDetection);
-googleLoginBtn.addEventListener('click', handleGoogleLogin);
-saveGoogleClient.addEventListener('click', saveGoogleClientId);
+searchScopeControls.forEach((control) => control.addEventListener('change', () => {
+  if (livePayload) {
+    const scoped = applySearchScope(livePayload);
+    livePayload = scoped;
+    renderDetection(scoped, 'done');
+  }
+  if (input.value.trim().length >= 3) scheduleLiveDetection();
+}));
 themeToggle.addEventListener('change', () => setTheme(themeToggle.checked ? 'dark' : 'light'));
 openLibraryEditor.addEventListener('click', showLibraryEditor);
 closeLibraryEditor.addEventListener('click', hideLibraryEditor);
@@ -111,7 +195,7 @@ copyBibliographyBtn.addEventListener('click', async () => {
   }, 1300);
 });
 
-document.querySelectorAll('input[name="formatMode"], #showJson, #groupLang, #apaVariant, #chicagoVariant').forEach((control) => {
+document.querySelectorAll('input[name="formatMode"], #showJson, #groupLang, #traditionalOutput, #apaVariant, #chicagoVariant').forEach((control) => {
   control.addEventListener('change', () => {
     render();
     renderLibrarySelector();
@@ -131,6 +215,50 @@ function selectedFormatMode() {
   return document.querySelector('input[name="formatMode"]:checked').value;
 }
 
+function selectedSearchScope() {
+  return document.querySelector('input[name="searchScope"]:checked')?.value || 'article';
+}
+
+function parseSearchConditions(value = '') {
+  const raw = normalizeText(value);
+  const tokens = raw.split(/\s+/).map(normalizeText).filter(Boolean);
+  const years = [...new Set(tokens.map((token) => token.match(/^(18|19|20)\d{2}$/)?.[0]).filter(Boolean))];
+  const nonYears = tokens.filter((token) => !years.includes(token));
+  const author = nonYears.find((token) => hasCjk(token) && compactSearchText(token).length >= 2 && compactSearchText(token).length <= 5 && !/[《〈「“:：,，.。]/u.test(token)) || '';
+  const sourceTerms = nonYears.filter((token) => token !== author && /期刊|季刊|學報|雜誌|研究|評論|journal|review|quarterly|monthly/i.test(token));
+  const titleTerms = nonYears.filter((token) => token !== author && !sourceTerms.includes(token) && /[《〈「“:：,，.。]|.{6,}/u.test(token));
+  return {
+    raw,
+    tokens,
+    author,
+    years,
+    sourceTerms,
+    titleTerms,
+    hasStructuredConditions: tokens.length > 1 && Boolean(author || years.length || sourceTerms.length || titleTerms.length),
+  };
+}
+
+function conditionSearchQueries(value = '', inferred = {}) {
+  const conditions = inferred.conditions || parseSearchConditions(value);
+  const base = expandSearchQueries(value, inferred);
+  if (!conditions.hasStructuredConditions) return base;
+  const authorTerms = conditions.author ? expandSearchQueries(conditions.author, { kind: 'author' }) : [];
+  const source = conditions.sourceTerms.join(' ');
+  const title = conditions.titleTerms.join(' ');
+  const year = conditions.years[0] || '';
+  return [...new Set([
+    conditions.raw,
+    [conditions.author, year, source, title].filter(Boolean).join(' '),
+    [conditions.author, year, source].filter(Boolean).join(' '),
+    [conditions.author, title, year].filter(Boolean).join(' '),
+    [title, conditions.author, year].filter(Boolean).join(' '),
+    [source, conditions.author, year].filter(Boolean).join(' '),
+    ...authorTerms,
+    ...conditions.sourceTerms,
+    ...conditions.titleTerms,
+  ].map(normalizeText).filter(Boolean))];
+}
+
 function selectedBibliographyMode() {
   return document.querySelector('input[name="bibliographyMode"]:checked').value;
 }
@@ -147,6 +275,10 @@ function selectedChicagoVariant() {
   return document.querySelector('#chicagoVariant').value;
 }
 
+function shouldUseTraditionalOutput() {
+  return !traditionalOutput || traditionalOutput.checked;
+}
+
 function setTheme(theme) {
   document.body.dataset.theme = theme;
   sessionStorage.setItem('cookie-theme', theme);
@@ -156,16 +288,30 @@ function setTheme(theme) {
 
 async function discover() {
   const current = items[0];
-  const seed = current ? current.doi || current.title || current.sourceInput || input.value : input.value;
+  const hasCandidatePayload = livePayload?.candidates?.length;
+  const seed = hasCandidatePayload ? livePayload.input || input.value : current ? current.doi || current.title || current.sourceInput || input.value : input.value;
   const chunks = splitInput(seed);
   if (!chunks.length) return;
-  setBusy(true, current ? '補全中' : '偵測中');
+  setBusy(true, hasCandidatePayload ? '批次補全中' : current ? '補全中' : '偵測中');
   try {
-    const payload = await runDetection(chunks[0]);
-    if (current) {
-      const completed = mergeMetadata(current, payload.best || payload.candidates?.[0] || {});
-      completed.candidates = payload.candidates || current.candidates || [completed];
-      completed.conflicts = conflictReportForCandidate(completed, payload.conflicts || []);
+    let payload = hasCandidatePayload ? livePayload : await runDetection(chunks[0]);
+    if (payload?.candidates?.length) {
+      payload = await enrichCandidatePayload(payload);
+      livePayload = payload;
+      if (current) {
+        const matched = payload.candidates.find((candidate) => fingerprintItem(candidate) === fingerprintItem(current))
+          || payload.candidates.find((candidate) => sameWorkScore(current, candidate) >= 58);
+        if (matched) {
+          matched.citations = citationOutputs(matched);
+          items = [matched];
+          render();
+        }
+      }
+    } else if (current) {
+      const enriched = await enrichSelectedMetadata(current, payload);
+      const completed = mergeMetadata(enriched, payload.best || payload.candidates?.[0] || {});
+      completed.candidates = dedupeItems([...(payload.candidates || []), ...(current.candidates || []), completed]);
+      completed.conflicts = metadataConflictReport(completed.candidates);
       completed.missing = missingFields(completed);
       completed.routes = payload.routes?.length ? payload.routes : verificationRoutes(completed.title || chunks[0]);
       completed.inferred = payload.inferred || current.inferred;
@@ -180,6 +326,188 @@ async function discover() {
   } finally {
     setBusy(false);
   }
+}
+
+async function enrichCandidatePayload(payload) {
+  const sourceCandidates = (payload.candidates || []).slice(0, 40);
+  const total = sourceCandidates.length;
+  const beforeMissing = sourceCandidates.reduce((sum, candidate) => sum + missingFields(candidate).length, 0);
+  let completedCount = 0;
+  const enriched = await mapWithConcurrency(sourceCandidates, 3, async (candidate) => {
+    try {
+      const item = await enrichSelectedMetadata(candidate, payload);
+      completedCount += 1;
+      discoverBtn.querySelector('span').textContent = `補全 ${completedCount}/${total}`;
+      renderEnrichmentSummary({ total, completed: completedCount, beforeMissing, working: true });
+      return item;
+    } catch {
+      completedCount += 1;
+      discoverBtn.querySelector('span').textContent = `補全 ${completedCount}/${total}`;
+      renderEnrichmentSummary({ total, completed: completedCount, beforeMissing, working: true });
+      return {
+        ...candidate,
+        missing: missingFields(candidate),
+        conflicts: candidate.conflicts || [],
+      };
+    }
+  });
+  const candidates = dedupeItems(enriched).filter((item) => sourceScopeMatches(item, payload.searchScope || selectedSearchScope())).sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0));
+  const afterMissing = candidates.reduce((sum, candidate) => sum + (candidate.missing || missingFields(candidate)).length, 0);
+  const conflicts = candidates.flatMap((item) => item.conflicts || []);
+  const summary = {
+    total,
+    completed: candidates.length,
+    beforeMissing,
+    afterMissing,
+    filled: Math.max(0, beforeMissing - afterMissing),
+    conflictCount: conflicts.length,
+    corroboratedCount: candidates.filter((item) => item.corroboratedBy?.length).length,
+  };
+  return {
+    ...payload,
+    best: candidates[0] || payload.best,
+    candidates,
+    missing: candidates.flatMap((item) => item.missing || missingFields(item)),
+    conflicts,
+    enrichmentSummary: summary,
+    enrichedAt: new Date().toISOString(),
+    searchScope: payload.searchScope || selectedSearchScope(),
+  };
+}
+
+async function mapWithConcurrency(list, limit, worker) {
+  const results = new Array(list.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, list.length) }, async () => {
+    while (next < list.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(list[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+async function enrichSelectedMetadata(item, initialPayload = {}) {
+  if (!item.serverEnriched) {
+    const serverResult = await postJson('/api/enrich', {
+      item: cleanJson(item),
+      initialPayload: slimEnrichmentPayload(initialPayload),
+    }).catch(() => null);
+    if (serverResult && (serverResult.title || serverResult.doi || serverResult.isbn)) {
+      return {
+        ...serverResult,
+        missing: missingFields(serverResult),
+        citations: citationOutputs(serverResult),
+      };
+    }
+  }
+
+  const searchTitle = normalizeText(item.title || initialPayload.best?.title || item.sourceInput || input.value);
+  const searchAuthor = normalizeText(item.authors?.[0] || initialPayload.best?.authors?.[0] || '');
+  const searchYear = normalizeText(item.year || initialPayload.best?.year || '');
+  const conditions = parseSearchConditions(initialPayload.input || item.sourceInput || input.value || '');
+  const exactQuery = [searchTitle, searchAuthor, searchYear].filter(Boolean).join(' ');
+  const variants = expandSearchQueries(searchTitle || exactQuery, { kind: 'title' });
+  const conditionQueries = fieldTargetedQueries(item, conditions);
+  const seedLocalHints = localMetadataHints(item).map((hint) => mergeMetadata(item, hint));
+  const jobs = [];
+
+  if (item.doi) {
+    jobs.push(
+      clientCrossrefDoi(item.doi),
+      clientOpenAlexDoi(item.doi),
+      clientDataCiteDoi(item.doi),
+      fetchSemanticByDoi(item.doi),
+    );
+  }
+  if (exactQuery) {
+    jobs.push(
+      clientCrossrefQuery(exactQuery),
+      clientOpenAlexQuery(exactQuery),
+      clientSemanticQuery(exactQuery),
+      clientDataCiteQuery(exactQuery),
+      clientEuropePmcQuery(exactQuery),
+      clientPubMedQuery(exactQuery),
+      clientDoajQuery(exactQuery),
+    );
+  }
+  if (searchTitle && exactQuery !== searchTitle) {
+    jobs.push(clientCrossrefQuery(searchTitle), clientOpenAlexQuery(searchTitle), clientSemanticQuery(searchTitle));
+  }
+  conditionQueries.forEach((query) => {
+    jobs.push(clientCrossrefQuery(query), clientOpenAlexQuery(query), clientSemanticQuery(query), clientDoajQuery(query));
+  });
+  if (item.type === 'book' || item.isbn || missingFields(item).includes('place')) {
+    if (item.isbn) jobs.push(clientOpenLibraryIsbn(item.isbn));
+    if (exactQuery) jobs.push(clientGoogleBooksQuery(exactQuery), clientOpenLibraryQuery(exactQuery), clientLibraryOfCongressQuery(exactQuery));
+    if (searchTitle && exactQuery !== searchTitle) jobs.push(clientGoogleBooksQuery(searchTitle), clientOpenLibraryQuery(searchTitle), clientLibraryOfCongressQuery(searchTitle));
+  }
+
+  const settled = await Promise.allSettled(jobs);
+  const remote = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+  const expandedEvidence = expandWithLocalMetadataHints([...(initialPayload.candidates || []), ...(item.candidates || []), item, ...remote]);
+  const evidence = [...seedLocalHints, ...expandedEvidence]
+    .filter((candidate) => candidate && (candidate.title || candidate.doi || candidate.isbn))
+    .filter(isAllowedDefaultCandidate)
+    .filter((candidate) => candidate.localEvidence || sameWorkScore(item, candidate) >= 44);
+  const ranked = rankCandidates(
+    evidence,
+    searchTitle || exactQuery,
+    variants,
+    'title',
+  );
+
+  const completed = dedupeItems([...seedLocalHints, ...ranked]).slice(0, 12).reduce((merged, candidate) => mergeMetadata(merged, candidate), item);
+  completed.corroboratedBy = [...new Set([...(completed.corroboratedBy || []), ...ranked.map((candidate) => candidate.source)].filter(Boolean))];
+  completed.conflicts = metadataConflictReport(evidence);
+  completed.missing = missingFields(completed);
+  completed.candidates = dedupeItems(evidence);
+  completed.enrichedAt = new Date().toISOString();
+  return completed;
+}
+
+function slimEnrichmentPayload(payload = {}) {
+  return {
+    input: payload.input || input.value.trim(),
+    searchScope: payload.searchScope || selectedSearchScope(),
+    inferred: payload.inferred || {},
+    best: payload.best ? cleanJson(payload.best) : null,
+    candidates: (payload.candidates || []).slice(0, 20).map(cleanJson),
+  };
+}
+
+function fieldTargetedQueries(item = {}, conditions = parseSearchConditions(input.value || '')) {
+  const missing = missingFields(item);
+  if (!missing.length) return [];
+  const title = item.title || conditions.titleTerms.join(' ');
+  const author = item.authors?.[0] || conditions.author || '';
+  const year = item.year || conditions.years[0] || '';
+  const source = item.containerTitle || conditions.sourceTerms.join(' ');
+  const core = [title, author, year].filter(Boolean).join(' ');
+  const sourceCore = [title, author, year, source].filter(Boolean).join(' ');
+  const queries = [sourceCore, core, [author, year, source].filter(Boolean).join(' ')];
+  if (missing.some((field) => ['containerTitle', 'volume', 'issue', 'pages'].includes(field))) {
+    queries.push(
+      [title, author, '卷', '期', '頁'].filter(Boolean).join(' '),
+      [title, author, year, '刊名', '卷期', '頁碼'].filter(Boolean).join(' '),
+      [title, author, year, '期刊名稱'].filter(Boolean).join(' '),
+      [title, author, 'Airiti'].filter(Boolean).join(' '),
+      [title, author, '華藝'].filter(Boolean).join(' '),
+      [title, author, 'LawData'].filter(Boolean).join(' '),
+      [title, author, 'DOI'].filter(Boolean).join(' '),
+    );
+  }
+  if (missing.includes('place')) {
+    queries.push(
+      [title, author, item.publisher, '出版地'].filter(Boolean).join(' '),
+      [title, author, item.publisher, '出版項'].filter(Boolean).join(' '),
+      [title, author, item.publisher, '出版資訊'].filter(Boolean).join(' '),
+      [title, item.isbn, 'publisher place'].filter(Boolean).join(' '),
+    );
+  }
+  return [...new Set(queries.map(normalizeText).filter((query) => query.length >= 3))].slice(0, 8);
 }
 
 async function parseFootnotes() {
@@ -220,81 +548,6 @@ async function parseFootnotes() {
   }
 }
 
-async function initGoogleAuth() {
-  if (!hasFirebaseConfig()) return null;
-  if (firebaseAuth && firebaseDb) return { auth: firebaseAuth, db: firebaseDb };
-  firebaseModules = await loadFirebaseModules();
-  firebaseApp = firebaseModules.initializeApp(firebaseConfig);
-  firebaseAuth = firebaseModules.getAuth(firebaseApp);
-  firebaseDb = firebaseModules.getFirestore(firebaseApp);
-  firebaseModules.onAuthStateChanged(firebaseAuth, async (user) => {
-    firebaseUser = user;
-    if (!user) {
-      authState.mode = 'cookie';
-      storageMode.textContent = 'Cookie 暫存';
-      googleLoginBtn.querySelector('span').textContent = '登入帳號';
-      renderLibrary(libraryState);
-      return;
-    }
-    authState.mode = 'firebase';
-    storageMode.textContent = 'Firebase 雲端同步';
-    googleLoginBtn.querySelector('span').textContent = '登出';
-    await loadFirebaseLibrary();
-    await syncGoogleLibrary();
-    renderLibrary(libraryState);
-  });
-  return { auth: firebaseAuth, db: firebaseDb };
-}
-
-async function loadFirebaseModules() {
-  if (firebaseModules) return firebaseModules;
-  const [appModule, authModule, firestoreModule] = await Promise.all([
-    import('https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js'),
-    import('https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js'),
-    import('https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js'),
-  ]);
-  return { ...appModule, ...authModule, ...firestoreModule };
-}
-
-function hasFirebaseConfig() {
-  return Boolean(firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId);
-}
-
-async function handleGoogleLogin() {
-  if (!hasFirebaseConfig()) {
-    googleConfig.hidden = !googleConfig.hidden;
-    setStorageNotice('Firebase 尚未設定。網站可先用 Cookie 暫存；要開放所有使用者登入，請在 firebase-config.js 填入 Firebase Web App config，並在 Firebase Console 啟用 Google 登入與 Firestore。');
-    return;
-  }
-  try {
-    await initGoogleAuth();
-    if (firebaseUser) {
-      await firebaseModules.signOut(firebaseAuth);
-      setStorageNotice('已登出，改用 Cookie／瀏覽器暫存模式。');
-      return;
-    }
-    const provider = new firebaseModules.GoogleAuthProvider();
-    await firebaseModules.signInWithPopup(firebaseAuth, provider);
-    googleConfig.hidden = true;
-  } catch (error) {
-    setStorageNotice(`Firebase 登入失敗：${error.message}`);
-  }
-}
-
-function saveGoogleClientId() {
-  if (hasFirebaseConfig()) {
-    googleConfig.hidden = true;
-    setStorageNotice('Firebase 設定已存在。請點選「登入帳號」開啟 Google 登入視窗。');
-    return;
-  }
-  setStorageNotice('Firebase 尚未設定：請在 firebase-config.js 填入 Firebase config，並把此 GitHub Pages 網域加入 Firebase Authentication 授權網域。');
-}
-
-function setStorageNotice(message) {
-  storageMode.textContent = 'Cookie 暫存';
-  libraryUpdated.textContent = message;
-}
-
 function scheduleLiveDetection() {
   clearTimeout(liveTimer);
   const value = input.value.trim();
@@ -308,10 +561,9 @@ function scheduleLiveDetection() {
     return;
   }
   if (/\n/.test(value) || /\b(Ibid\.?|同前註|同註|前引書)|頁\s*\d|pp?\./i.test(value)) {
-    renderDetection({ message: '看起來像頁下註，請貼到下方「註腳解析」欄位還原書目。' }, 'idle');
-    return;
+    renderDetection({ message: '看起來像頁下註，系統會直接在輸入偵測中嘗試還原書目。' }, 'loading');
   }
-  renderDetection({ message: '正在準備搜尋免費開放 API：Crossref、DataCite、Semantic Scholar、Europe PMC、PubMed、DOAJ、Open Library、Library of Congress、Google Books；OpenAlex 僅作免費額度補充，Airiti／Google Scholar 等保留導向路徑。' }, 'loading');
+    renderDetection({ message: '正在判斷輸入類型並啟動中英／繁簡檢索：Crossref、OpenAlex、Semantic Scholar、DataCite、Europe PMC、PubMed、DOAJ、Open Library、Library of Congress、Google Books；Airiti／Google Scholar／CNKI 等保留導向路徑。' }, 'loading');
   liveTimer = setTimeout(async () => {
     const requestId = ++liveRequestId;
     try {
@@ -325,14 +577,50 @@ function scheduleLiveDetection() {
 
 async function runDetection(value) {
   let payload;
+  const scope = selectedSearchScope();
   try {
-    payload = await getJson(`/api/discover?q=${encodeURIComponent(value)}`);
+    payload = await getJson(`/api/discover?q=${encodeURIComponent(value)}&scope=${encodeURIComponent(scope)}`);
   } catch (error) {
     payload = await clientDiscover(value);
     payload.warning = `目前使用瀏覽器直連資料庫模式：${error.message}`;
   }
+  payload = applySearchScope(payload);
   livePayload = payload;
   return payload;
+}
+
+function applySearchScope(payload) {
+  if (!payload || !payload.candidates) return payload;
+  const scope = selectedSearchScope();
+  const intent = payload.inferred?.kind || 'query';
+  const scoped = scope === 'all' ? payload.candidates : payload.candidates.filter((item) => sourceScopeMatches(item, scope));
+  const candidates = scoped.filter((item) => isDisplayableCandidate(item, intent));
+  const best = sourceScopeMatches(payload.best || {}, scope) && isDisplayableCandidate(payload.best || {}, intent) ? payload.best : candidates[0] || payload.best;
+  return {
+    ...payload,
+    searchScope: scope,
+    candidates,
+    best,
+    missing: missingFields(best || {}),
+    conflicts: metadataConflictReport(candidates.filter((item) => fingerprintItem(item) === fingerprintItem(best || {}))),
+  };
+}
+
+function sourceScopeMatches(item = {}, scope = selectedSearchScope()) {
+  if (scope === 'all') return true;
+  if (scope === 'book') return isBookLike(item);
+  return isArticleLike(item);
+}
+
+function isBookLike(item = {}) {
+  const type = String(item.type || '').toLowerCase();
+  return /book|monograph|edited_book/.test(type) && !/chapter/.test(type);
+}
+
+function isArticleLike(item = {}) {
+  const type = String(item.type || '').toLowerCase();
+  if (isBookLike(item)) return false;
+  return /article|journal|reference|posted_content|web/.test(type) || Boolean(item.containerTitle || item.volume || item.issue || item.pages || item.doi);
 }
 
 function renderDetection(payload, state) {
@@ -343,6 +631,7 @@ function renderDetection(payload, state) {
   if (!payload) {
     detectStatus.querySelector('p').textContent = '尚未輸入。輸入 DOI、學者姓名或篇名後，這裡會即時顯示搜尋狀況。';
     updateMetrics();
+    renderEnrichmentSummary(null);
     return;
   }
   if (payload.error) {
@@ -354,40 +643,92 @@ function renderDetection(payload, state) {
     return;
   }
 
-  const candidates = payload.candidates || [];
+  const candidates = (payload.candidates || []).filter((candidate) => isDisplayableCandidate(candidate, payload.inferred?.kind || 'query'));
   const missing = payload.missing?.length || 0;
   const conflicts = payload.conflicts?.length || 0;
+  const variants = payload.inferred?.variants?.length ? `；已啟用 ${payload.inferred.variants.length} 組中英／繁簡檢索詞` : '';
+  const scopeLabel = { article: '期刊', book: '專書', all: '期刊＋專書' }[payload.searchScope || selectedSearchScope()] || '期刊';
   updateMetrics(payload);
+  renderEnrichmentSummary(payload.enrichmentSummary || null);
   detectStatus.querySelector('p').textContent =
     state === 'loading'
       ? '正在搜尋資料庫...'
-      : `偵測為 ${kindLabel(payload.inferred?.kind)}，找到 ${candidates.length} 筆候選；缺失 ${missing} 欄，衝突 ${conflicts} 處。`;
+      : `偵測為 ${kindLabel(payload.inferred?.kind)}，範圍：${scopeLabel}，找到 ${candidates.length} 筆候選；缺失 ${missing} 欄，衝突 ${conflicts} 處${variants}。`;
 
   if (!candidates.length) {
     candidateList.innerHTML = '<div class="candidate-empty">目前沒有資料庫命中。下方驗證路徑仍會保留 Airiti、Google Scholar 與 Crossref 搜尋入口。</div>';
     return;
   }
 
-  candidates.slice(0, 8).forEach((candidate, index) => {
+  candidates.slice(0, 40).forEach((candidate, index) => {
     const card = document.createElement('button');
     card.className = 'candidate-card';
     card.type = 'button';
+    const statusBits = [
+      `缺 ${candidate.missing?.length ?? missingFields(candidate).length}`,
+      `衝突 ${candidate.conflicts?.length || 0}`,
+      candidate.corroboratedBy?.length ? `佐證 ${candidate.corroboratedBy.length + 1}` : '',
+    ].filter(Boolean).join(' · ');
     card.innerHTML = `
-      <span class="candidate-rank">${index + 1}</span>
+      <span class="candidate-rank">${String(index + 1).padStart(2, '0')}</span>
       <span class="candidate-main">
         <strong>${escapeHtml(candidate.title || '[待補題名]')}</strong>
         <em>${escapeHtml(metaLine(candidate) || candidate.source || '')}</em>
+        <small>${escapeHtml(statusBits)}</small>
       </span>
       <span class="candidate-score">${candidate.confidence || 55}%</span>
     `;
     card.addEventListener('click', () => selectCandidate(candidate, payload));
     candidateList.appendChild(card);
   });
+  if (payload.inferred?.kind === 'author') {
+    candidateList.appendChild(authorDatabaseHints(payload.input || input.value.trim(), payload.inferred?.variants || []));
+  }
+}
+
+function renderEnrichmentSummary(summary) {
+  if (!enrichSummary) return;
+  if (!summary) {
+    enrichSummary.innerHTML = '<strong>補全統計</strong><span>尚未執行補全</span>';
+    return;
+  }
+  if (summary.working) {
+    enrichSummary.innerHTML = `
+      <strong>補全統計</strong>
+      <span>處理 ${summary.completed || 0}/${summary.total || 0} 筆；補全前缺 ${summary.beforeMissing || 0} 欄</span>
+    `;
+    return;
+  }
+  enrichSummary.innerHTML = `
+    <strong>補全統計</strong>
+    <span>處理 ${summary.completed || 0}/${summary.total || 0} 筆，補上 ${summary.filled || 0} 欄，仍缺 ${summary.afterMissing || 0} 欄</span>
+    <small>衝突 ${summary.conflictCount || 0} 組；交叉佐證 ${summary.corroboratedCount || 0} 筆${summary.afterMissing ? '；未補欄位保留為待人工查核' : ''}</small>
+  `;
+}
+
+function authorDatabaseHints(query, variants = []) {
+  const wrap = document.createElement('div');
+  wrap.className = 'database-hints';
+  const terms = encodeURIComponent([query, ...variants].filter(Boolean).slice(0, 4).join(' OR '));
+  const compact = encodeURIComponent(query || variants[0] || '');
+  const links = [
+    ['Airiti 華藝', `https://www.google.com/search?q=site%3Aairitilibrary.com+${terms}`],
+    ['Airiti ACI', `https://www.google.com/search?q=site%3Aairitiaci.com+${terms}`],
+    ['Google Scholar', `https://scholar.google.com/scholar?q=${terms}`],
+    ['CNKI', `https://www.google.com/search?q=site%3Acnki.net+${terms}`],
+    ['萬方', `https://www.google.com/search?q=site%3Awanfangdata.com.cn+${terms}`],
+  ];
+  wrap.innerHTML = `
+    <strong>完整著作延伸檢索</strong>
+    <span>部分臺灣與中文資料庫沒有免費公開 API；請用這些入口補查未回傳的作者著作。</span>
+    <div>${links.map(([name, url]) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${name}</a>`).join('')}</div>
+  `;
+  return wrap;
 }
 
 function updateMetrics(payload = livePayload) {
   const current = items[0];
-  stats.itemCount.textContent = String(payload?.candidates?.length || 0);
+  if (stats.itemCount) stats.itemCount.textContent = String(payload?.candidates?.length || 0);
   stats.missingCount.textContent = String(current?.missing?.length ?? payload?.missing?.length ?? 0);
   stats.conflictCount.textContent = String(current?.conflicts?.length ?? payload?.conflicts?.length ?? 0);
   const confidence = current?.confidence || payload?.best?.confidence || null;
@@ -400,6 +741,8 @@ function kindLabel(kind) {
     isbn: 'ISBN',
     url: '網址',
     footnote: '頁下註',
+    author: '作者姓名',
+    title: '篇名／書名',
     query: '關鍵字／學者姓名',
   }[kind] || '線索';
 }
@@ -408,9 +751,9 @@ async function selectCandidate(candidate, payload = livePayload) {
   const item = {
     ...candidate,
     candidates: payload?.candidates || [candidate],
-    conflicts: conflictReportForCandidate(candidate, payload?.conflicts || []),
+    conflicts: candidate.conflicts?.length ? candidate.conflicts : conflictReportForCandidate(candidate, payload?.conflicts || []),
     missing: missingFields(candidate),
-    routes: payload?.routes?.length ? payload.routes : verificationRoutes(candidate.title || ''),
+    routes: candidate.routes?.length ? candidate.routes : verificationRoutes([candidate.title, candidate.authors?.[0], candidate.year].filter(Boolean).join(' '), payload?.inferred?.variants || []),
     inferred: payload?.inferred || { kind: 'query' },
     sourceInput: payload?.input || input.value.trim(),
   };
@@ -425,6 +768,27 @@ function conflictReportForCandidate(candidate, conflicts) {
   return conflicts.filter((conflict) => conflict.values?.some((value) => blob.includes(String(value.value).toLowerCase())));
 }
 
+function metadataConflictReport(evidence = []) {
+  const fields = ['year', 'containerTitle', 'volume', 'issue', 'pages', 'publisher', 'doi'];
+  return fields
+    .map((field) => {
+      const values = new Map();
+      evidence.forEach((item) => {
+        const raw = Array.isArray(item?.[field]) ? item[field].join('; ') : item?.[field];
+        const value = normalizeText(raw || '');
+        if (!value) return;
+        const key = compactSearchText(value);
+        if (!key) return;
+        const current = values.get(key) || { value, sources: [] };
+        current.sources = [...new Set([...current.sources, item.source || 'Unknown'])];
+        values.set(key, current);
+      });
+      const unique = [...values.values()];
+      return unique.length > 1 ? { field, values: unique } : null;
+    })
+    .filter(Boolean);
+}
+
 function splitInput(value) {
   const text = value.trim();
   if (!text) return [];
@@ -435,7 +799,7 @@ function splitInput(value) {
 }
 
 function setBusy(isBusy, label = '處理中') {
-  [discoverBtn, footnoteBtn].forEach((button) => {
+  [discoverBtn, footnoteBtn].filter(Boolean).forEach((button) => {
     button.disabled = isBusy;
   });
   if (isBusy) {
@@ -446,7 +810,6 @@ function setBusy(isBusy, label = '處理中') {
 }
 
 function render() {
-  emptyState.hidden = items.length > 0;
   results.innerHTML = '';
   const sorted = sortItems(items);
   const current = sorted[0];
@@ -465,17 +828,19 @@ function render() {
 
 function renderItem(item) {
   const node = template.content.firstElementChild.cloneNode(true);
-  node.querySelector('.eyebrow').textContent = `${typeLabels[item.type] || item.type || '文獻'} · ${item.source || 'Manual'}`;
-  node.querySelector('h3').textContent = item.title || item.sourceInput || '待補題名';
-  node.querySelector('.meta-line').textContent = metaLine(item);
-  node.querySelector('.confidence').textContent = `${item.confidence || 55}%`;
+  const displayItem = toTraditionalItem(item);
+  node.classList.add(`type-${displayItem.type || 'article'}`);
+  node.querySelector('.eyebrow').textContent = `${typeLabels[displayItem.type] || displayItem.type || '文獻'} · ${displayItem.source || 'Manual'}`;
+  node.querySelector('h3').textContent = displayItem.title || displayItem.sourceInput || '待補題名';
+  node.querySelector('.meta-line').textContent = metaLine(displayItem);
+  animateConfidence(node.querySelector('.confidence'), Number(displayItem.confidence || 55));
 
   const warnings = node.querySelector('.warnings');
-  renderWarnings(warnings, item);
+  renderWarnings(warnings, displayItem);
 
   const output = node.querySelector('.citation-output');
   const tabs = [...node.querySelectorAll('.citation-tabs button')];
-  const outputs = citationOutputs(item);
+  const outputs = citationOutputs(displayItem);
   const initialTab = 'note';
   setOutput(initialTab);
   tabs.forEach((tab) => {
@@ -512,7 +877,6 @@ function renderItem(item) {
     render();
   });
 
-  node.querySelector('.reverse').addEventListener('click', () => expandItem(item, node));
   const openButton = node.querySelector('.open-url');
   const directUrl = literatureUrl(item);
   if (directUrl) openButton.href = directUrl;
@@ -520,14 +884,35 @@ function renderItem(item) {
   openButton.classList.toggle('disabled', !directUrl);
   openButton.setAttribute('aria-disabled', directUrl ? 'false' : 'true');
   openButton.title = directUrl ? '開啟這筆文獻的 DOI 或來源頁面' : '目前沒有可開啟的文獻網址';
-  openButton.addEventListener('click', (event) => {
-    event.preventDefault();
-    if (!directUrl) return;
-    window.location.assign(directUrl);
-  });
+  if (!directUrl) {
+    openButton.addEventListener('click', (event) => event.preventDefault());
+  } else {
+    openButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      openExternalUrl(directUrl);
+    });
+  }
   renderRoutes(node.querySelector('.routes'), item.routes || []);
 
   return node;
+}
+
+function animateConfidence(node, value = 55) {
+  if (!node) return;
+  const target = Math.max(0, Math.min(100, Math.round(value)));
+  const start = performance.now();
+  const duration = 900;
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+  const draw = (now) => {
+    const progress = Math.min(1, (now - start) / duration);
+    const current = Math.round(target * easeOut(progress));
+    node.textContent = `${current}%`;
+    node.style.setProperty('--progress', `${current * 3.6}deg`);
+    if (progress < 1) requestAnimationFrame(draw);
+  };
+  node.textContent = '0%';
+  node.style.setProperty('--progress', '0deg');
+  requestAnimationFrame(draw);
 }
 
 async function saveToLibrary(item, options = {}) {
@@ -558,7 +943,6 @@ async function saveToLibrary(item, options = {}) {
     }
     libraryState.updatedAt = new Date().toISOString();
     sessionStorage.setItem(cookieKey, JSON.stringify(libraryState));
-    if (authState.mode === 'firebase' && firebaseUser) await syncGoogleLibrary();
     renderLibrary(libraryState);
     libraryUpdated.textContent = options.reason === 'copy'
       ? `已複製並存入個人文獻資料庫：${new Date(now).toLocaleString('zh-TW')}`
@@ -576,16 +960,8 @@ async function loadLibrary() {
 function renderLibrary(summary) {
   const count = summary.count ?? summary.items?.length ?? 0;
   libraryCount.textContent = `${count} 筆已保存`;
-  if (authState.mode === 'firebase') {
-    libraryUpdated.textContent = summary.updatedAt ? `Firebase 雲端已同步：${new Date(summary.updatedAt).toLocaleString('zh-TW')}` : 'Firebase 雲端同步模式';
-    preparedFilePath.textContent = authState.cloudFiles.libraryPath || `Firebase://users/${firebaseUser?.uid || 'current-user'}/libraries/default`;
-    renderLibrarySelector();
-    renderLibraryHistory();
-    renderLibraryEditor();
-    return;
-  }
-  libraryUpdated.textContent = summary.updatedAt ? `Cookie 暫存更新：${new Date(summary.updatedAt).toLocaleString('zh-TW')}，關閉分頁後清除` : 'Cookie 暫存模式：關閉分頁後清除';
-  preparedFilePath.textContent = 'Cookie session://prepared-bibliography.md';
+  libraryUpdated.textContent = summary.updatedAt ? `瀏覽器暫存更新：${new Date(summary.updatedAt).toLocaleString('zh-TW')}，關閉分頁後清除` : '瀏覽器暫存模式：關閉分頁後清除';
+  if (preparedFilePath) preparedFilePath.textContent = 'browser-session://prepared-bibliography.md';
   renderLibrarySelector();
   renderLibraryHistory();
   renderLibraryEditor();
@@ -749,17 +1125,16 @@ async function deleteEditorSelection() {
     libraryUpdated.textContent = '請先勾選要刪除的文獻。';
     return;
   }
-  const ok = window.confirm(`確定要從個人文獻資料庫刪除 ${chosen.length} 筆文獻嗎？這會同步更新 Cookie 暫存${authState.mode === 'firebase' ? '與 Firebase 雲端資料庫' : ''}。`);
+  const ok = window.confirm(`確定要從個人文獻資料庫刪除 ${chosen.length} 筆文獻嗎？這會同步更新瀏覽器暫存。`);
   if (!ok) return;
   for (const item of chosen) {
     await deleteLibraryItem(item, { confirm: false, skipSync: true });
   }
   editorSelectedKeys.clear();
-  if (authState.mode === 'firebase' && firebaseUser) await syncGoogleLibrary();
   renderLibrary(libraryState);
   render();
   if (selectedRefKeys.size) buildSelectedBibliography();
-  else bibliographyOutput.textContent = '尚未選取文獻。';
+  else bibliographyOutput.textContent = bibliographyPlaceholder();
 }
 
 async function deleteLibraryItem(item, options = {}) {
@@ -774,23 +1149,29 @@ async function deleteLibraryItem(item, options = {}) {
   libraryState.updatedAt = new Date().toISOString();
   persistSelectedRefs();
   sessionStorage.setItem(cookieKey, JSON.stringify(libraryState));
-  if (!options.skipSync && authState.mode === 'firebase' && firebaseUser) await syncGoogleLibrary();
   renderLibrary(libraryState);
   render();
   if (selectedRefKeys.size) buildSelectedBibliography();
-  else bibliographyOutput.textContent = '尚未選取文獻。';
+  else bibliographyOutput.textContent = bibliographyPlaceholder();
+}
+
+function bibliographyPlaceholder() {
+  return '從個人文獻資料庫套用文獻後，按「產出列表」即可在此顯示。';
 }
 
 function persistSelectedRefs() {
   sessionStorage.setItem(selectedRefsKey, JSON.stringify([...selectedRefKeys]));
 }
 
-function buildSelectedBibliography() {
+async function buildSelectedBibliography() {
   const chosen = sortBibliographyItems(libraryState.items.filter((item) => selectedRefKeys.has(fingerprintItem(item))));
   if (!chosen.length) {
-    bibliographyOutput.textContent = '尚未套用文獻。請先到個人文獻資料庫編輯模式勾選資料，並按「套用到輸出列表」。';
+    bibliographyOutput.textContent = bibliographyPlaceholder();
     return;
   }
+  bibliographyOutput.textContent = '正在補齊中文文獻英文譯名並產出參考文獻列表...';
+  await Promise.all(chosen.map((item) => ensureEnglishTitleTranslation(item)));
+  sessionStorage.setItem(cookieKey, JSON.stringify(libraryState));
   bibliographyOutput.textContent = bibliographyListOutput(chosen);
 }
 
@@ -800,61 +1181,22 @@ function bibliographyListOutput(list) {
   const chicago = groupedBibliographyText(list, formatChicagoTemplate);
   if (mode === 'apa') return `【APA References／中國大陸研究格式】\n${apa}`;
   if (mode === 'chicago') return `【Chicago Bibliography／國防雜誌格式】\n${chicago}`;
-  return `【APA References／中國大陸研究格式】\n${apa}\n\n【Chicago Bibliography／國防雜誌格式】\n${chicago}`;
+  return `【Chicago Bibliography／國防雜誌格式】\n${chicago}\n\n【APA References／中國大陸研究格式】\n${apa}`;
 }
 
 function groupedBibliographyText(list, formatter) {
+  const normalized = list.map(toTraditionalItem);
   if (!document.querySelector('#groupLang').checked) {
-    return sortBibliographyItems(list).map(formatter).join('\n\n');
+    return sortBibliographyItems(normalized).map(formatter).join('\n\n');
   }
-  const zh = sortBibliographyItems(list.filter(isChinese));
-  const foreign = sortBibliographyItems(list.filter((item) => !isChinese(item)));
+  const zh = sortBibliographyItems(normalized.filter(isChinese));
+  const foreign = sortBibliographyItems(normalized.filter((item) => !isChinese(item)));
   const sections = [];
   if (zh.length) sections.push(['中文文獻', zh]);
   if (foreign.length) sections.push(['外文文獻', foreign]);
   return sections
     .map(([heading, itemsInGroup]) => `${heading}\n${itemsInGroup.map(formatter).join('\n\n')}`)
     .join('\n\n');
-}
-
-async function syncGoogleLibrary() {
-  if (!firebaseUser || !firebaseDb || !firebaseModules) return;
-  const payload = {
-    updatedAt: libraryState.updatedAt || new Date().toISOString(),
-    count: libraryState.items.length,
-    items: libraryState.items,
-    selectedRefKeys: [...selectedRefKeys],
-  };
-  const ref = firebaseLibraryRef();
-  await firebaseModules.setDoc(ref, payload, { merge: true });
-  authState.cloudFiles = {
-    libraryPath: `Firebase://users/${firebaseUser.uid}/libraries/default`,
-    markdownName: `Firebase://users/${firebaseUser.uid}/libraries/default/preparedBibliography`,
-  };
-  sessionStorage.setItem('cookie-firebase-files', JSON.stringify(authState.cloudFiles));
-}
-
-async function loadFirebaseLibrary() {
-  if (!firebaseUser || !firebaseDb || !firebaseModules) return;
-  const snapshot = await firebaseModules.getDoc(firebaseLibraryRef());
-  if (!snapshot.exists()) return;
-  const remote = snapshot.data();
-  const remoteItems = Array.isArray(remote.items) ? remote.items : [];
-  const localItems = Array.isArray(libraryState.items) ? libraryState.items : [];
-  const mergedItems = mergeLibraryItems([...remoteItems, ...localItems]);
-  libraryState = {
-    updatedAt: newestTimestamp(remote.updatedAt, libraryState.updatedAt),
-    items: mergedItems,
-  };
-  if (Array.isArray(remote.selectedRefKeys) && !selectedRefKeys.size) {
-    selectedRefKeys = new Set(remote.selectedRefKeys);
-    persistSelectedRefs();
-  }
-  sessionStorage.setItem(cookieKey, JSON.stringify(libraryState));
-}
-
-function firebaseLibraryRef() {
-  return firebaseModules.doc(firebaseDb, 'users', firebaseUser.uid, 'libraries', 'default');
 }
 
 function mergeLibraryItems(list) {
@@ -889,7 +1231,7 @@ function oldestTimestamp(...values) {
 
 function preparedBibliographyMarkdown(list, updatedAt) {
   return [
-    '# Cookie Prepared Bibliography',
+    '# Browser Session Prepared Bibliography',
     '',
     `Updated: ${updatedAt}`,
     '',
@@ -908,9 +1250,11 @@ function renderWarnings(container, item) {
   container.innerHTML = '';
   if (item.missing?.length) {
     container.appendChild(tag(`缺失：${item.missing.map((field) => missingLabels[field] || field).join('、')}`, 'warn'));
+    container.appendChild(tag('處理：改用 DOI、題名＋作者與資料庫導向補查；仍缺則保留待人工確認', 'warn'));
   }
   if (item.conflicts?.length) {
     container.appendChild(tag(`Metadata 衝突：${item.conflicts.map((c) => missingLabels[c.field] || c.field).join('、')}`, 'danger'));
+    container.appendChild(tag('處理：優先採 DOI／Airiti／期刊頁，其次 Crossref／OpenAlex；衝突值保留提示', 'danger'));
   }
   if (item.corroboratedBy?.length) {
     container.appendChild(tag(`交叉佐證：${item.corroboratedBy.join('、')}`, ''));
@@ -931,30 +1275,32 @@ function tag(text, level) {
 }
 
 function metaLine(item) {
+  const meta = toTraditionalItem(item);
   const parts = [
-    formatAuthors(item.authors, item),
-    item.year,
-    item.containerTitle,
-    item.volume ? `Vol. ${item.volume}` : '',
-    item.issue ? `No. ${item.issue}` : '',
-    item.pages ? `pp. ${item.pages}` : '',
-    item.doi ? `DOI: ${item.doi}` : '',
+    formatAuthors(meta.authors, meta),
+    meta.year,
+    meta.containerTitle,
+    meta.volume ? `Vol. ${meta.volume}` : '',
+    meta.issue ? `No. ${meta.issue}` : '',
+    meta.pages ? `pp. ${meta.pages}` : '',
+    meta.doi ? `DOI: ${meta.doi}` : '',
   ].filter(Boolean);
   return parts.join(' · ');
 }
 
 function citationOutputs(item) {
+  const meta = toTraditionalItem(item);
   return {
-    note: noteOutput(item),
-    bibliography: referenceOutput(item),
-    apa: formatApaTemplate(item),
-    chicago: formatChicagoTemplate(item),
-    json: JSON.stringify(cleanJson(item), null, 2),
+    note: noteOutput(meta),
+    bibliography: referenceOutput(meta),
+    apa: formatApaTemplate(meta),
+    chicago: formatChicagoTemplate(meta),
+    json: JSON.stringify(cleanJson(meta), null, 2),
   };
 }
 
 function noteOutput(item) {
-  const apa = `【APA 夾註／In-text Citation】\n${formatApaInText(item)}`;
+  const apa = `【APA 夾注】\n${formatApaInText(item)}`;
   const chicago = `【Chicago Style 註腳／國防雜誌】\n${formatChicagoFootnote(item)}`;
   const mode = selectedFormatMode();
   if (mode === 'apa') return apa;
@@ -968,7 +1314,7 @@ function referenceOutput(item) {
   const mode = selectedFormatMode();
   if (mode === 'apa') return apa;
   if (mode === 'chicago') return chicago;
-  return `${apa}\n\n${chicago}`;
+  return `${chicago}\n\n${apa}`;
 }
 
 function formatApaInText(item) {
@@ -979,7 +1325,7 @@ function formatApaInText(item) {
   if (selectedApaVariant() === 'narrative') {
     return isChinese(item) ? `${author}（${year}${pages ? `，頁${pages}` : ''}）` : `${author} (${year}${locator})`;
   }
-  return isChinese(item) ? `（${author} ${year}${locator}）` : `(${author}, ${year}${locator})`;
+  return isChinese(item) ? `（${author}，${year}${locator}）` : `(${author}, ${year}${locator})`;
 }
 
 function formatChicagoFootnote(item) {
@@ -1097,6 +1443,47 @@ function titleCase(text) {
   return String(text || '').trim();
 }
 
+async function ensureEnglishTitleTranslation(item) {
+  if (!item || !isChinese(item) || item.titleTranslation || item.autoTitleTranslation) return item;
+  const title = normalizeText(item.title || '');
+  if (!title || /^\[.+\]$/.test(title)) return item;
+  const cacheKey = compactSearchText(title);
+  if (translationCache[cacheKey]) {
+    item.autoTitleTranslation = translationCache[cacheKey];
+    return item;
+  }
+  try {
+    const translated = await translateChineseTitle(title);
+    if (translated) {
+      item.autoTitleTranslation = translated;
+      translationCache[cacheKey] = translated;
+      sessionStorage.setItem(translationCacheKey, JSON.stringify(translationCache));
+    }
+  } catch {
+    item.autoTitleTranslationStatus = 'unavailable';
+  }
+  return item;
+}
+
+async function translateChineseTitle(title) {
+  const url = new URL('https://api.mymemory.translated.net/get');
+  url.searchParams.set('q', title);
+  url.searchParams.set('langpair', 'zh-TW|en');
+  url.searchParams.set('mt', '1');
+  const response = await fetch(url);
+  if (!response.ok) return '';
+  const data = await response.json();
+  const text = titleCase(decodeHtmlEntities(normalizeText(data.responseData?.translatedText || '')));
+  if (!text || text === title || hasCjk(text)) return '';
+  return text;
+}
+
+function decodeHtmlEntities(value = '') {
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = value;
+  return textarea.value;
+}
+
 function apaInTextAuthors(item) {
   if (!item.authors?.length) return isChinese(item) ? '作者待補' : 'Author';
   if (isChinese(item)) return item.authors.length > 2 ? `${item.authors[0]}等` : item.authors.join('、');
@@ -1159,8 +1546,9 @@ function urlSuffix(item) {
 
 function translationHint(item) {
   if (!isChinese(item)) return '';
-  if (item.titleTranslation) return ` ${item.titleRomanization || ''} [${item.titleTranslation}].`;
-  return ' [待補英文譯名／漢語拼音]';
+  const translated = item.titleTranslation || item.autoTitleTranslation;
+  if (translated) return ` ${item.titleRomanization || ''} [${translated}].`;
+  return ' [英文譯名待補：可按「產出列表」自動嘗試免 Key 補譯]';
 }
 
 function dateForChicago(item) {
@@ -1236,8 +1624,12 @@ function bibliographySortKey(item) {
 function dedupeItems(list) {
   const map = new Map();
   for (const item of list) {
-    const key = item.doi ? `doi:${item.doi}` : `${(item.title || '').toLowerCase().replace(/\W/g, '')}:${item.year || ''}`;
-    if (!map.has(key)) map.set(key, item);
+    const key = item.doi ? `doi:${item.doi}` : `${compactSearchText(item.title || item.sourceInput || '')}:${item.year || ''}`;
+    if (!map.has(key)) {
+      map.set(key, item);
+    } else {
+      map.set(key, mergeMetadata(map.get(key), item));
+    }
   }
   return [...map.values()];
 }
@@ -1271,12 +1663,167 @@ function mergeMetadata(base, supplement) {
     const incoming = supplement?.[field];
     const currentEmpty = Array.isArray(current) ? !current.length : !current;
     const incomingHasValue = Array.isArray(incoming) ? incoming.length > 0 : Boolean(incoming);
+    if (
+      field === 'title'
+      && supplement?.localEvidence
+      && incomingHasValue
+      && current
+      && mergeTitleKey(current).includes(mergeTitleKey(incoming))
+      && String(incoming).length <= String(current).length + 4
+    ) {
+      merged[field] = incoming;
+      return;
+    }
     if (currentEmpty && incomingHasValue) merged[field] = incoming;
   });
   merged.source = base.source === 'Manual' && supplement?.source ? supplement.source : base.source || supplement?.source;
   merged.confidence = Math.max(Number(base.confidence || 0), Number(supplement?.confidence || 0), 55);
   merged.corroboratedBy = [...new Set([...(base.corroboratedBy || []), ...(supplement?.corroboratedBy || []), supplement?.source].filter(Boolean))];
+  merged.localEvidence = Boolean(base.localEvidence || supplement?.localEvidence);
   return merged;
+}
+
+function mergeTitleKey(value = '') {
+  return compactSearchText(value).replaceAll('提儀', '提議');
+}
+
+function expandWithLocalMetadataHints(list = []) {
+  return list.flatMap((item) => {
+    const hints = localMetadataHints(item).map((hint) => mergeMetadata(item, hint));
+    return [item, ...hints];
+  });
+}
+
+function localMetadataHints(item = {}) {
+  const hints = [];
+  const urlHint = metadataFromKnownUrl(item.url || item.URL || '');
+  if (urlHint) hints.push({ ...urlHint, title: item.title || urlHint.title || '', authors: item.authors?.length ? item.authors : urlHint.authors || [] });
+  const bookHint = metadataFromBookPublisher(item);
+  if (bookHint) hints.push(bookHint);
+
+  const blob = compactSearchText([
+    item.title,
+    item.subtitle,
+    item.sourceInput,
+    item.original,
+    item.containerTitle,
+    ...(item.authors || []),
+  ].filter(Boolean).join(' '));
+
+  for (const record of curatedMetadataHints) {
+    const keyMatch = record.keys.some((key) => blob.includes(compactSearchText(key)));
+    const authorMatch = !record.authors?.length || record.authors.some((author) => blob.includes(compactSearchText(author)));
+    if (keyMatch && authorMatch) {
+      hints.push({
+        ...record.meta,
+        url: item.url || record.meta.url || '',
+        localEvidence: true,
+      });
+    }
+  }
+
+  return hints.map((hint) => ({
+    confidence: 92,
+    ...hint,
+    sourcePriority: hint.sourcePriority || 90,
+    localEvidence: true,
+    missing: missingFields(hint),
+  }));
+}
+
+function metadataFromBookPublisher(item = {}) {
+  if (!isBookLike(item) && !item.publisher) return null;
+  const split = splitPlacePublisher(item.publisher || item.raw?.createdPublished || '');
+  const place = item.place || split.place || placeFromPublisher(item.publisher || split.publisher || '');
+  if (!place || item.place) return null;
+  return {
+    source: '出版地線索補全',
+    sourcePriority: 73,
+    type: item.type || 'book',
+    title: item.title || '',
+    authors: item.authors || [],
+    year: item.year || '',
+    publisher: split.publisher || item.publisher || '',
+    place,
+    language: item.language || '',
+    isbn: item.isbn || '',
+    url: item.url || '',
+    confidence: 74,
+    localEvidence: true,
+    raw: { note: '由館藏 created/published 欄位或出版社所在地線索補出版地；仍建議用來源網址查核。' },
+  };
+}
+
+function metadataFromKnownUrl(rawUrl = '') {
+  if (!rawUrl || !/airiti|airitiaci|華藝/i.test(rawUrl)) return null;
+  let decoded = rawUrl;
+  try {
+    decoded = decodeURIComponent(rawUrl);
+  } catch {
+    decoded = rawUrl;
+  }
+  const docId = extractAiritiDocId(decoded);
+  if (!docId) {
+    return {
+      source: 'Airiti URL 補全',
+      sourcePriority: 96,
+      type: 'article',
+      url: rawUrl,
+      language: 'zh-TW',
+      raw: { note: '已辨識為 Airiti／華藝來源頁，但 URL 未揭露卷期頁碼。' },
+    };
+  }
+  const full = docId.match(/^\d{8}-(\d{6})-(\d{1,4})-(\d{1,4})-(\d+)-(\d+)(?:-[a-z])?$/i);
+  if (full) {
+    return {
+      source: 'Airiti DocID 補全',
+      sourcePriority: 97,
+      type: 'article',
+      year: full[1].slice(0, 4),
+      issued: `${full[1].slice(0, 4)}/${Number(full[1].slice(4, 6))}`,
+      volume: full[2],
+      issue: full[3],
+      pages: normalizePageText(`${full[4]}-${full[5]}`),
+      url: rawUrl,
+      language: 'zh-TW',
+      raw: { docId, note: '由 Airiti DocID 編碼解析日期、卷期與頁碼。' },
+    };
+  }
+  const pageOnly = docId.match(/^\d{8}-(\d{6})-\d{10,14}-\d{10,14}-(\d+)-(\d+)(?:-[a-z])?$/i);
+  if (pageOnly) {
+    return {
+      source: 'Airiti Index 補全',
+      sourcePriority: 94,
+      type: 'article',
+      year: pageOnly[1].slice(0, 4),
+      issued: `${pageOnly[1].slice(0, 4)}/${Number(pageOnly[1].slice(4, 6))}`,
+      pages: normalizePageText(`${pageOnly[2]}-${pageOnly[3]}`),
+      url: rawUrl,
+      language: 'zh-TW',
+      raw: { docId, note: '由 Airiti Index 編碼解析日期與頁碼；卷期仍需其他來源佐證。' },
+    };
+  }
+  return {
+    source: 'Airiti URL 補全',
+    sourcePriority: 92,
+    type: 'article',
+    url: rawUrl,
+    language: 'zh-TW',
+    raw: { docId, note: '已辨識 Airiti DocID，但格式未含完整卷期頁碼。' },
+  };
+}
+
+function extractAiritiDocId(url = '') {
+  try {
+    const parsed = new URL(url);
+    const queryId = parsed.searchParams.get('DocID') || parsed.searchParams.get('docid');
+    if (queryId) return queryId;
+  } catch {
+    // Keep regex fallback for relative or already-decoded URLs.
+  }
+  return url.match(/(?:DocID=|Detail\/|Index\/)([A-Za-z0-9-]{18,})/i)?.[1]
+    || url.match(/([0-9]{8}-[0-9]{6}(?:-[0-9]{1,14}){3,5}(?:-[a-z])?)/i)?.[1]
+    || '';
 }
 
 function fingerprintItem(item) {
@@ -1304,14 +1851,18 @@ function renderRoutes(container, routes) {
   });
 }
 
-function verificationRoutes(query) {
-  const encoded = encodeURIComponent(query);
+function verificationRoutes(query, variants = []) {
+  const terms = [...new Set([query, ...variants].map((term) => toTraditional(normalizeText(term))).filter(Boolean))];
+  const primary = terms[0] || query || '';
+  const broad = terms.slice(0, 4).join(' OR ');
+  const encoded = encodeURIComponent(primary);
+  const encodedBroad = encodeURIComponent(broad || primary);
   return [
-    { name: 'Airiti Library', priority: 'high', url: `https://www.airitilibrary.com/Search/alDetailedMesh?DocIDs=${encoded}`, note: '繁體中文與臺灣期刊優先人工核對路徑' },
-    { name: 'Google Scholar', priority: 'high', url: `https://scholar.google.com/scholar?q=${encoded}`, note: '引用與被引用脈絡核對' },
+    { name: 'Airiti Library', priority: 'high', url: `https://www.google.com/search?q=site%3Aairitilibrary.com+${encodedBroad}`, note: '繁體中文與臺灣期刊優先人工核對路徑' },
+    { name: 'Google Scholar', priority: 'high', url: `https://scholar.google.com/scholar?q=${encodedBroad}`, note: '作者、篇名與來源頁面查核' },
     { name: 'Crossref', priority: 'live', url: `https://search.crossref.org/?q=${encoded}`, note: 'DOI 與出版資料核對' },
     { name: 'OpenAlex', priority: 'live', url: `https://openalex.org/search?filter=works.default.search:${encoded}`, note: '被引用與參考文獻擴展' },
-    { name: 'Semantic Scholar', priority: 'live', url: `https://www.semanticscholar.org/search?q=${encoded}&sort=relevance`, note: 'AI／英文文獻引用脈絡補充' },
+    { name: 'Semantic Scholar', priority: 'live', url: `https://www.semanticscholar.org/search?q=${encoded}&sort=relevance`, note: '英文題名、作者與期刊欄位補查' },
     { name: 'DataCite', priority: 'live', url: `https://commons.datacite.org/?query=${encoded}`, note: '資料集、報告與 DOI 補充來源' },
     { name: 'Europe PMC', priority: 'oa', url: `https://europepmc.org/search?query=${encoded}`, note: '生命科學與醫學開放文獻補充' },
     { name: 'arXiv', priority: 'oa', url: `https://arxiv.org/search/?query=${encoded}&searchtype=all`, note: '預印本與冷門作者補充搜尋' },
@@ -1319,10 +1870,9 @@ function verificationRoutes(query) {
     { name: 'Project MUSE', priority: 'database', url: `https://muse.jhu.edu/search?action=search&query=${encoded}`, note: '人文社會科學出版品導向' },
     { name: 'ERIC', priority: 'database', url: `https://eric.ed.gov/?q=${encoded}`, note: '教育學文獻資料庫導向' },
     { name: 'PubMed', priority: 'database', url: `https://pubmed.ncbi.nlm.nih.gov/?term=${encoded}`, note: '醫學與生命科學資料庫導向' },
-    { name: 'CNKI', priority: 'database', url: `https://kns.cnki.net/kns8s/defaultresult/index?kw=${encoded}`, note: '中國大陸期刊、學位論文與會議資料導向' },
-    { name: '萬方數據', priority: 'database', url: `https://s.wanfangdata.com.cn/paper?q=${encoded}`, note: '中國大陸期刊與學位論文資料導向' },
+    { name: 'CNKI', priority: 'database', url: `https://www.google.com/search?q=site%3Acnki.net+${encodedBroad}`, note: '中國大陸期刊與專書資料導向' },
+    { name: '萬方數據', priority: 'database', url: `https://www.google.com/search?q=site%3Awanfangdata.com.cn+${encodedBroad}`, note: '中國大陸期刊資料導向' },
     { name: 'WorldCat', priority: 'book', url: `https://search.worldcat.org/search?q=${encoded}`, note: '全球圖書館館藏與專書查找' },
-    { name: '臺灣博碩士論文知識加值系統', priority: 'tw', url: `https://ndltd.ncl.edu.tw/cgi-bin/gs32/gsweb.cgi?o=dwebmge&mode=basic&q=${encoded}`, note: '臺灣學位論文導向' },
     { name: 'NDDS 全國文獻傳遞服務', priority: 'tw', url: `https://ndds.stpi.niar.org.tw/?lang=zh_TW`, note: '臺灣期刊、館藏與文獻傳遞服務入口' },
     { name: 'Google Books', priority: 'book', url: `https://www.google.com/search?tbm=bks&q=${encoded}`, note: '專書、譯本與 ISBN 補充搜尋' },
     { name: 'Open Library', priority: 'book', url: `https://openlibrary.org/search?q=${encoded}`, note: '專書與開放書目補充搜尋' },
@@ -1332,85 +1882,715 @@ function verificationRoutes(query) {
 }
 
 function literatureUrl(item) {
-  if (item.doi) return `https://doi.org/${item.doi}`;
-  if (item.url) return item.url;
-  if (item.openAlexId) return item.openAlexId;
-  if (item.semanticId) return `https://www.semanticscholar.org/paper/${item.semanticId}`;
-  const routes = item.routes?.length ? item.routes : verificationRoutes(item.title || item.sourceInput || '');
-  return routes.find((route) => route.name === 'Google Scholar')?.url || routes[0]?.url || '';
+  const directCandidates = [
+    item.doi ? `https://doi.org/${item.doi}` : '',
+    item.url || '',
+    item.openAlexId || '',
+    item.semanticId ? `https://www.semanticscholar.org/paper/${item.semanticId}` : '',
+  ];
+  return directCandidates.find((url) => url && !isSearchPageUrl(url)) || '';
+}
+
+function isSearchPageUrl(url = '') {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, '');
+    const path = parsed.pathname;
+    return (host === 'google.com' && path.startsWith('/search'))
+      || (host === 'scholar.google.com' && path.startsWith('/scholar'))
+      || (host === 'search.crossref.org')
+      || (host === 'openalex.org' && path === '/search')
+      || (host === 'semanticscholar.org' && path.startsWith('/search'))
+      || (host === 'commons.datacite.org' && parsed.searchParams.has('query'));
+  } catch {
+    return true;
+  }
 }
 
 async function expandItem(item, node) {
   const target = node.querySelector('.expansion');
+  const button = node.querySelector('.reverse');
+  const label = button?.querySelector('span');
+  const originalLabel = label?.textContent || '擴展資料';
+  if (label) label.textContent = '搜尋中';
+  if (button) button.disabled = true;
   target.innerHTML = '<div class="mini-ref"><span>正在擴展參考文獻與被引用研究...</span></div>';
   try {
-    const expansion = await postJson('/api/reverse', item);
-    target.innerHTML = '';
-    renderMiniRefs(target, '重要參考文獻', expansion.references);
-    renderMiniRefs(target, '後續被引用研究', expansion.citations);
-    if (!expansion.references.length && !expansion.citations.length) {
-      target.innerHTML = '<div class="mini-ref"><span>目前資料庫未回傳可用的雙向擴展結果，請使用下方 Airiti／Google Scholar 路徑核對。</span></div>';
+    let expansion = await postJson('/api/reverse', item).catch(() => ({ references: [], citations: [] }));
+    if (!expansion.references?.length && !expansion.citations?.length) {
+      expansion = await clientReverseExpand(item).catch(() => ({ references: [], citations: [] }));
     }
+    expansion = normalizeCitationExpansion(item, expansion);
+    expansion.related = await relatedContextItems(item);
+    renderCitationContext(target, item, expansion);
   } catch (error) {
-    target.innerHTML = '<div class="mini-ref"><span>目前無法由後端擴展引用脈絡。請使用下方 Google Scholar、OpenAlex、Semantic Scholar 或 Airiti 路徑核對引用與被引用研究。</span></div>';
+    renderCitationContext(target, item, { references: [], citations: [] });
+  } finally {
+    if (label) label.textContent = originalLabel;
+    if (button) button.disabled = false;
   }
 }
 
-function renderMiniRefs(container, title, refs) {
-  if (!refs?.length) return;
-  const heading = document.createElement('h4');
-  heading.textContent = title;
-  container.appendChild(heading);
-  refs.slice(0, 6).forEach((ref) => {
-    const div = document.createElement('div');
-    div.className = 'mini-ref';
-    div.innerHTML = `<p>${escapeHtml(ref.title || '[待補題名]')}</p><span>${escapeHtml(metaLine(ref))}</span>`;
-    container.appendChild(div);
+async function clientReverseExpand(item) {
+  const [openAlex, semantic, crossref] = await Promise.all([
+    clientOpenAlexReverseExpand(item).catch(() => ({ references: [], citations: [] })),
+    clientSemanticReverseExpand(item).catch(() => ({ references: [], citations: [] })),
+    clientCrossrefReverseExpand(item).catch(() => ({ references: [], citations: [] })),
+  ]);
+  return {
+    references: dedupeItems([...(openAlex.references || []), ...(semantic.references || []), ...(crossref.references || [])]).slice(0, 16),
+    citations: dedupeItems([...(openAlex.citations || []), ...(semantic.citations || [])]).slice(0, 16),
+  };
+}
+
+async function clientCrossrefReverseExpand(item) {
+  let doi = item.doi;
+  if (!doi && item.title) {
+    const resolved = await resolveCrossrefSeed(item).catch(() => null);
+    doi = resolved?.doi || '';
+  }
+  if (!doi) return { references: [], citations: [] };
+  const data = await externalJson(`https://api.crossref.org/works/${encodeURIComponent(doi)}`);
+  const refs = data.message?.reference || [];
+  return {
+    references: refs.map(clientCrossrefReferenceMap).filter((ref) => ref.title || ref.doi).slice(0, 12),
+    citations: [],
+  };
+}
+
+function clientCrossrefReferenceMap(ref) {
+  return {
+    source: 'Crossref Reference',
+    type: 'article',
+    title: normalizeText(ref['article-title'] || ref.articleTitle || ref['series-title'] || ref.unstructured || ''),
+    authors: normalizeAuthorList(ref.author || ''),
+    year: normalizeText(ref.year || ''),
+    containerTitle: normalizeText(ref['journal-title'] || ref.volumeTitle || ''),
+    volume: normalizeText(ref.volume || ''),
+    issue: normalizeText(ref.issue || ''),
+    pages: normalizePageText(ref['first-page'] || ref.pages || ''),
+    doi: normalizeText(ref.DOI || ref.doi || '').toLowerCase(),
+    url: ref.DOI || ref.doi ? `https://doi.org/${normalizeText(ref.DOI || ref.doi).toLowerCase()}` : '',
+    confidence: ref.DOI || ref.doi ? 78 : 62,
+  };
+}
+
+async function clientOpenAlexReverseExpand(item) {
+  let work = null;
+  if (item.openAlexId) {
+    work = await externalJson(openAlexApiUrl(item.openAlexId));
+  } else if (item.doi) {
+    work = await externalJson(`https://api.openalex.org/works/https://doi.org/${encodeURIComponent(item.doi)}`);
+  } else if (item.title) {
+    work = await resolveOpenAlexSeed(item).catch(() => null);
+  }
+  if (!work?.id) return { references: [], citations: [] };
+  const referenceUrls = (work.referenced_works || []).slice(0, 8).map(openAlexApiUrl);
+  const referenceResults = await Promise.allSettled(referenceUrls.map((url) => externalJson(url)));
+  const references = referenceResults
+    .filter((result) => result.status === 'fulfilled' && result.value?.id)
+    .map((result) => clientOpenAlexMap(result.value));
+  const shortId = String(work.id || '').split('/').pop();
+  const citedUrl = new URL('https://api.openalex.org/works');
+  citedUrl.searchParams.set('filter', `cites:${shortId}`);
+  citedUrl.searchParams.set('sort', 'cited_by_count:desc');
+  citedUrl.searchParams.set('per-page', '8');
+  const cited = await externalJson(citedUrl).catch(() => ({ results: [] }));
+  return {
+    references,
+    citations: (cited.results || []).map(clientOpenAlexMap),
+  };
+}
+
+async function clientSemanticReverseExpand(item) {
+  let resolvedId = item.semanticId;
+  if (!resolvedId && !item.doi && item.title) {
+    const resolved = await resolveSemanticSeed(item).catch(() => null);
+    resolvedId = resolved?.semanticId || '';
+  }
+  const id = resolvedId
+    ? encodeURIComponent(resolvedId)
+    : item.doi
+      ? `DOI:${encodeURIComponent(item.doi)}`
+      : '';
+  if (!id) return { references: [], citations: [] };
+  const fields = [
+    'paperId',
+    'title',
+    'authors',
+    'year',
+    'venue',
+    'journal',
+    'externalIds',
+    'url',
+    'references.paperId',
+    'references.title',
+    'references.authors',
+    'references.year',
+    'references.venue',
+    'references.externalIds',
+    'references.url',
+    'citations.paperId',
+    'citations.title',
+    'citations.authors',
+    'citations.year',
+    'citations.venue',
+    'citations.externalIds',
+    'citations.url',
+  ].join(',');
+  const data = await externalJson(`https://api.semanticscholar.org/graph/v1/paper/${id}?fields=${fields}`);
+  return {
+    references: (data.references || []).map(clientSemanticPaperMap).filter((paper) => paper.title),
+    citations: (data.citations || []).map(clientSemanticPaperMap).filter((paper) => paper.title),
+  };
+}
+
+async function resolveOpenAlexSeed(item) {
+  const query = [item.title, item.authors?.[0], item.year].filter(Boolean).join(' ');
+  const url = new URL('https://api.openalex.org/works');
+  url.searchParams.set('search', query);
+  url.searchParams.set('per-page', '8');
+  const data = await externalJson(url);
+  const mapped = (data.results || []).map((work) => ({ ...clientOpenAlexMap(work), rawOpenAlexWork: work }));
+  return bestSeedMatch(mapped, item, 42)?.rawOpenAlexWork || null;
+}
+
+async function resolveSemanticSeed(item) {
+  const query = [item.title, item.authors?.[0], item.year].filter(Boolean).join(' ');
+  const url = new URL('https://api.semanticscholar.org/graph/v1/paper/search');
+  url.searchParams.set('query', query);
+  url.searchParams.set('limit', '8');
+  url.searchParams.set('fields', 'paperId,title,authors,year,venue,journal,externalIds,url');
+  const data = await externalJson(url);
+  const mapped = (data.data || []).map(clientSemanticPaperMap);
+  return bestSeedMatch(mapped, item, 42);
+}
+
+async function resolveCrossrefSeed(item) {
+  const matches = await clientCrossrefQuery([item.title, item.authors?.[0], item.year].filter(Boolean).join(' '));
+  return bestSeedMatch(matches, item, 42);
+}
+
+function bestSeedMatch(matches = [], item = {}, minScore = 35) {
+  const variants = expandSearchQueries(item.title || item.sourceInput || '', { kind: 'title' });
+  const ranked = matches
+    .map((candidate) => ({
+      ...candidate,
+      seedScore: relevanceForCandidate(candidate, item.title || item.sourceInput || '', variants, 'title')
+        + (item.year && candidate.year === item.year ? 10 : 0)
+        + (hasAuthorOverlap(item, candidate) ? 12 : 0),
+    }))
+    .sort((a, b) => b.seedScore - a.seedScore);
+  return ranked[0]?.seedScore >= minScore ? ranked[0] : null;
+}
+
+function sameWorkScore(base = {}, candidate = {}) {
+  if (base.doi && candidate.doi && compactSearchText(base.doi) === compactSearchText(candidate.doi)) return 100;
+  const title = base.title || base.sourceInput || '';
+  const variants = expandSearchQueries(title, { kind: 'title' });
+  let score = relevanceForCandidate(candidate, title, variants, 'title');
+  if (base.year && candidate.year && String(base.year) === String(candidate.year)) score += 10;
+  if (hasAuthorOverlap(base, candidate)) score += 14;
+  if (base.containerTitle && candidate.containerTitle && compactSearchText(base.containerTitle) === compactSearchText(candidate.containerTitle)) score += 8;
+  return score;
+}
+
+function clientSemanticPaperMap(paper) {
+  return {
+    source: 'Semantic Scholar',
+    type: 'article',
+    title: normalizeText(paper.title || ''),
+    authors: (paper.authors || []).map((a) => normalizeText(a.name || '')).filter(Boolean),
+    year: paper.year ? String(paper.year) : '',
+    containerTitle: normalizeText(paper.venue || paper.journal?.name || ''),
+    doi: normalizeText(paper.externalIds?.DOI || '').toLowerCase(),
+    url: normalizeText(paper.url || (paper.paperId ? `https://www.semanticscholar.org/paper/${paper.paperId}` : '')),
+    semanticId: normalizeText(paper.paperId || ''),
+    confidence: 82,
+  };
+}
+
+async function relatedContextItems(item) {
+  const local = (item.candidates || [])
+    .filter((candidate) => fingerprintItem(candidate) !== fingerprintItem(item))
+    .filter((candidate) => candidate.title || candidate.doi)
+    .slice(0, 10);
+  const author = item.authors?.[0] || '';
+  const searchTerms = [
+    author,
+    item.title,
+    item.containerTitle ? `${author} ${item.containerTitle}` : '',
+    item.sourceInput,
+  ].filter(Boolean).slice(0, 4);
+  const remoteJobs = [
+    author ? clientOpenAlexAuthorQuery(author).catch(() => []) : Promise.resolve([]),
+    ...searchTerms.map((term) => clientOpenAlexQuery(term).catch(() => [])),
+  ];
+  const remote = (await Promise.all(remoteJobs)).flat();
+  return rankCandidates([...local, ...remote], item.title || author || item.sourceInput || '', searchTerms, 'title')
+    .filter((candidate) => fingerprintItem(candidate) !== fingerprintItem(item))
+    .slice(0, 12);
+}
+
+function openAlexApiUrl(idOrUrl) {
+  const shortId = String(idOrUrl || '').split('/').pop();
+  return `https://api.openalex.org/works/${shortId}`;
+}
+
+function renderCitationContext(container, item, expansion) {
+  const related = (expansion.related || []).slice(0, 12).map(toTraditionalItem);
+  const references = (expansion.references || []).slice(0, 10).map(toTraditionalItem);
+  const citations = (expansion.citations || []).slice(0, 10).map(toTraditionalItem);
+  container.innerHTML = '';
+  container.appendChild(citationGraphView(item, references, citations, related, expansion));
+  if (!references.length && !citations.length && !related.length) {
+    const fallback = document.createElement('div');
+    fallback.className = 'mini-ref';
+    fallback.innerHTML = '<span>目前沒有足夠的開放 Metadata 建立關聯圖。請使用下方 Google Scholar、OpenAlex、Semantic Scholar 或 Airiti 路徑延伸查核。</span>';
+    container.appendChild(fallback);
+  }
+}
+
+function normalizeCitationExpansion(baseItem, expansion = {}) {
+  const references = dedupeItems(expansion.references || [])
+    .filter((candidate) => candidate.title || candidate.doi)
+    .filter((candidate) => fingerprintItem(candidate) !== fingerprintItem(baseItem))
+    .map((candidate) => ({ ...candidate, relationVerified: true, relationType: 'reference' }));
+  const allCitations = dedupeItems(expansion.citations || [])
+    .filter((candidate) => candidate.title || candidate.doi)
+    .filter((candidate) => fingerprintItem(candidate) !== fingerprintItem(baseItem))
+    .map((candidate) => ({ ...candidate, relationVerified: true, relationType: 'citation' }));
+  const nonSelfCitations = allCitations.filter((candidate) => !hasAuthorOverlap(baseItem, candidate));
+  return {
+    ...expansion,
+    references,
+    citations: nonSelfCitations,
+    selfCitationsFiltered: allCitations.length - nonSelfCitations.length,
+  };
+}
+
+function hasAuthorOverlap(a = {}, b = {}) {
+  const left = (a.authors || []).map(compactAuthorName).filter(Boolean);
+  const right = (b.authors || []).map(compactAuthorName).filter(Boolean);
+  if (!left.length || !right.length) return false;
+  return left.some((name) => right.some((other) => name === other || name.includes(other) || other.includes(name)));
+}
+
+function compactAuthorName(name = '') {
+  return compactSearchText(name).replace(/等|etal|jr|junior/gi, '');
+}
+
+function citationGraphView(item, references, citations, related, expansion = {}) {
+  const graph = document.createElement('div');
+  graph.className = 'graph-view';
+  const center = toTraditionalItem(item);
+  const groups = [
+    { type: 'reference', label: '重要前作', emptyLabel: '開放資料庫未提供本文參考文獻', items: references, x: 25, y: 38 },
+    { type: 'citation', label: '後續引用', emptyLabel: '開放資料庫未提供其他作者後續引用', items: citations, x: 75, y: 38 },
+    { type: 'related', label: '同作者／同主題', emptyLabel: '尚無同作者或同主題關聯', items: related, x: 50, y: 74 },
+  ];
+  const maxCount = Math.max(1, ...groups.map((group) => group.items.length));
+  const nodes = [
+    {
+      id: 'center',
+      title: center.title || center.sourceInput || '目前文獻',
+      meta: metaLine(center) || '目前選取文獻',
+      type: 'center',
+      strength: 1,
+      x: 50,
+      y: 50,
+      vx: 0,
+      vy: 0,
+      fixed: true,
+      indexLabel: '本文',
+      typeLabel: '目前文獻',
+      items: [...references, ...citations, ...related],
+      emptyLabel: '目前沒有可列出的關聯文獻',
+      groupNode: false,
+    },
+  ];
+  const edges = groups.map((group) => ({
+    from: 'center',
+    to: group.type,
+    type: group.type,
+    strength: group.items.length ? 0.35 + (group.items.length / maxCount) * 0.65 : 0.18,
+  }));
+  groups.forEach((group) => {
+    nodes.push({
+      id: group.type,
+      title: group.label,
+      meta: group.items.length ? `${group.items.length} 筆文獻` : group.emptyLabel,
+      type: group.type,
+      strength: group.items.length ? 0.35 + (group.items.length / maxCount) * 0.65 : 0.14,
+      x: group.x,
+      y: group.y,
+      vx: 0,
+      vy: 0,
+      fixed: true,
+      indexLabel: String(group.items.length),
+      typeLabel: group.label,
+      items: group.items,
+      emptyLabel: group.emptyLabel,
+      groupNode: true,
+    });
   });
+  graph.innerHTML = `
+    <div class="graph-head">
+      <strong>引用脈絡 Graph View</strong>
+      <span>前作＝本文參考文獻；後續引用＝其他文獻引用本文；同作者／同主題僅作延伸閱讀。</span>
+    </div>
+    <div class="graph-canvas" aria-label="引用脈絡互動關聯圖">
+      <svg class="graph-links" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+      <div class="graph-nodes"></div>
+    </div>
+    <div class="graph-legend">
+      <span class="${references.length ? '' : 'inactive'}"><i class="legend-dot reference"></i>本文參考文獻${references.length ? ` ${references.length}` : ' 0'}</span>
+      <span class="${citations.length ? '' : 'inactive'}"><i class="legend-dot citation"></i>其他作者引用本文${citations.length ? ` ${citations.length}` : ' 0'}</span>
+      <span class="${related.length ? '' : 'inactive'}"><i class="legend-dot related"></i>延伸閱讀${related.length ? ` ${related.length}` : ' 0'}</span>
+      ${expansion.selfCitationsFiltered ? `<span class="inactive"><i class="legend-dot muted-dot"></i>已排除同作者自引 ${expansion.selfCitationsFiltered}</span>` : ''}
+    </div>
+    <div class="graph-detail" aria-live="polite"></div>
+  `;
+  hydrateGraphView(graph, nodes, edges);
+  return graph;
+}
+
+function hydrateGraphView(graph, nodes, edges) {
+  const canvas = graph.querySelector('.graph-canvas');
+  const svg = graph.querySelector('.graph-links');
+  const nodeLayer = graph.querySelector('.graph-nodes');
+  const detail = graph.querySelector('.graph-detail');
+  let expandedType = null;
+  let dragging = null;
+  let frame = null;
+
+  function mountNode(node) {
+    if (nodeLayer.querySelector(`[data-id="${CSS.escape(node.id)}"]`)) return;
+    const el = document.createElement('button');
+    el.className = `graph-node ${node.type}${node.itemNode ? ' item-node' : ''}`;
+    el.dataset.id = node.id;
+    el.title = `${node.title}\n${node.meta}`;
+    el.type = 'button';
+    el.setAttribute('aria-label', `${node.typeLabel}：${node.title}`);
+    el.innerHTML = `<strong>${escapeHtml(node.indexLabel || '')}</strong><span>${escapeHtml(node.typeLabel || '')}</span>`;
+    let startPoint = null;
+    el.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      dragging = {
+        node,
+        pointerId: event.pointerId,
+        offsetX: rect.width ? ((event.clientX - rect.left) / rect.width) * 100 - node.x : 0,
+        offsetY: rect.height ? ((event.clientY - rect.top) / rect.height) * 100 - node.y : 0,
+      };
+      startPoint = { x: event.clientX, y: event.clientY };
+      node.fixed = true;
+      el.classList.add('dragging');
+      el.setPointerCapture?.(event.pointerId);
+      renderGraph();
+    });
+    el.addEventListener('pointermove', (event) => {
+      if (!dragging || dragging.node !== node) return;
+      setNodeFromPointer(node, canvas, event, dragging);
+      renderGraph();
+    });
+    el.addEventListener('pointerup', (event) => {
+      if (dragging?.node === node) {
+        el.releasePointerCapture?.(event.pointerId);
+        el.classList.remove('dragging');
+        dragging = null;
+        node.fixed = node.type === 'center' || Boolean(node.groupNode) || Boolean(node.itemNode);
+        const moved = startPoint ? Math.hypot(event.clientX - startPoint.x, event.clientY - startPoint.y) : 0;
+        if (moved < 6) handleGraphNodeClick(node);
+        startPoint = null;
+      }
+    });
+    nodeLayer.appendChild(el);
+  }
+
+  nodes.forEach(mountNode);
+
+  function handleGraphNodeClick(node) {
+    if (node.groupNode) {
+      toggleGraphGroup(node);
+      return;
+    }
+    if (node.itemNode) {
+      renderGraphDetail(detail, {
+        ...node,
+        typeLabel: node.typeLabel || '關聯文獻',
+        items: node.sourceItem ? [node.sourceItem] : [],
+      });
+    }
+  }
+
+  function toggleGraphGroup(groupNode) {
+    if (expandedType === groupNode.type) {
+      collapseGraphGroup();
+      detail.hidden = true;
+      return;
+    }
+    collapseGraphGroup();
+    expandedType = groupNode.type;
+    const groupEl = nodeLayer.querySelector(`[data-id="${CSS.escape(groupNode.id)}"]`);
+    groupEl?.classList.add('expanded');
+    renderGraphDetail(detail, groupNode);
+    if (!groupNode.items?.length) {
+      renderGraph();
+      return;
+    }
+    const count = Math.min(12, groupNode.items.length);
+    groupNode.items.slice(0, count).forEach((item, index) => {
+      const angle = (-Math.PI / 2) + (index / Math.max(1, count)) * Math.PI * 2;
+      const radius = count > 8 ? 18 : 15;
+      const child = {
+        id: `${groupNode.type}-item-${index}`,
+        title: item.title || '[待補題名]',
+        meta: metaLine(item) || item.source || '',
+        type: groupNode.type,
+        strength: Math.max(0.35, Math.min(1, Number(item.confidence || 66) / 100)),
+        x: Math.max(7, Math.min(93, groupNode.x + Math.cos(angle) * radius)),
+        y: Math.max(9, Math.min(91, groupNode.y + Math.sin(angle) * radius)),
+        vx: 0,
+        vy: 0,
+        fixed: true,
+        indexLabel: graphNodeTitle(item.title || '[待補題名]'),
+        typeLabel: [item.year, item.authors?.[0]].filter(Boolean).join(' · ') || groupNode.typeLabel,
+        itemNode: true,
+        sourceItem: item,
+      };
+      nodes.push(child);
+      edges.push({ from: groupNode.id, to: child.id, type: groupNode.type, strength: child.strength, child: true });
+      mountNode(child);
+    });
+    renderGraph();
+  }
+
+  function collapseGraphGroup() {
+    if (!expandedType) return;
+    nodeLayer.querySelectorAll('.graph-node.expanded').forEach((el) => el.classList.remove('expanded'));
+    nodeLayer.querySelectorAll('.graph-node.item-node').forEach((el) => el.remove());
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+      if (nodes[index].itemNode) nodes.splice(index, 1);
+    }
+    for (let index = edges.length - 1; index >= 0; index -= 1) {
+      if (edges[index].child) edges.splice(index, 1);
+    }
+    expandedType = null;
+    renderGraph();
+  }
+
+  function tick() {
+    if (!document.body.contains(graph)) {
+      if (frame) cancelAnimationFrame(frame);
+      return;
+    }
+    nodes.forEach((node) => {
+      if (node.fixed) return;
+      const dx = 50 - node.x;
+      const dy = 50 - node.y;
+      node.vx += dx * 0.0008;
+      node.vy += dy * 0.0008;
+      nodes.forEach((other) => {
+        if (other === node) return;
+        const rx = node.x - other.x;
+        const ry = node.y - other.y;
+        const distance = Math.max(5, Math.hypot(rx, ry));
+        const force = 11 / (distance * distance);
+        node.vx += (rx / distance) * force;
+        node.vy += (ry / distance) * force;
+      });
+      node.vx *= 0.9;
+      node.vy *= 0.9;
+      node.x = Math.max(6, Math.min(94, node.x + node.vx));
+      node.y = Math.max(8, Math.min(92, node.y + node.vy));
+    });
+    renderGraph();
+    frame = requestAnimationFrame(tick);
+  }
+
+  function renderGraph() {
+    nodes.forEach((node) => {
+      const el = nodeLayer.querySelector(`[data-id="${CSS.escape(node.id)}"]`);
+      if (!el) return;
+      el.style.left = `${node.x}%`;
+      el.style.top = `${node.y}%`;
+    });
+    const canvasRect = canvas.getBoundingClientRect();
+    svg.setAttribute('viewBox', `0 0 ${Math.max(1, canvasRect.width)} ${Math.max(1, canvasRect.height)}`);
+    const centerFor = (nodeId) => {
+      const node = nodes.find((candidate) => candidate.id === nodeId);
+      return node && canvasRect.width && canvasRect.height
+        ? { x: (node.x / 100) * canvasRect.width, y: (node.y / 100) * canvasRect.height }
+        : null;
+    };
+    svg.innerHTML = edges.map((edge) => {
+      const from = centerFor(edge.from);
+      const to = centerFor(edge.to);
+      if (!from || !to) return '';
+      const width = 0.28 + edge.strength * 0.55;
+      return `<line class="${edge.type}" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" stroke-width="${width}" />`;
+    }).join('');
+  }
+
+  renderGraph();
+  detail.hidden = true;
+  frame = requestAnimationFrame(tick);
+}
+
+function graphNodeTitle(title = '') {
+  const clean = normalizeText(title);
+  if (!clean) return '[待補題名]';
+  if (hasCjk(clean)) return clean.length > 18 ? `${clean.slice(0, 17)}...` : clean;
+  return clean.length > 28 ? `${clean.slice(0, 27)}...` : clean;
+}
+
+function renderGraphDetail(container, node) {
+  if (!container || !node) return;
+  const items = (node.items || []).slice(0, 12);
+  container.hidden = false;
+  container.innerHTML = `
+    <div class="graph-detail-head">
+      <strong>${escapeHtml(node.typeLabel || node.title)}</strong>
+      <span>${items.length ? `${items.length} 筆關聯文獻` : escapeHtml(node.emptyLabel || '目前沒有開放資料庫回傳的關聯文獻')}</span>
+    </div>
+  `;
+  if (!items.length) return;
+  const list = document.createElement('ol');
+  items.forEach((item) => {
+    const li = document.createElement('li');
+    const url = literatureUrl(item);
+    li.innerHTML = `
+      <strong>${escapeHtml(item.title || '[待補題名]')}</strong>
+      <span>${escapeHtml(metaLine(item) || item.source || '')}</span>
+      ${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">前往來源</a>` : ''}
+    `;
+    list.appendChild(li);
+  });
+  container.appendChild(list);
+}
+
+function setNodeFromPointer(node, canvas, event, dragState = {}) {
+  const rect = canvas.getBoundingClientRect();
+  const nextX = rect.width ? ((event.clientX - rect.left) / rect.width) * 100 - Number(dragState.offsetX || 0) : node.x;
+  const nextY = rect.height ? ((event.clientY - rect.top) / rect.height) * 100 - Number(dragState.offsetY || 0) : node.y;
+  node.x = Math.max(5, Math.min(95, nextX));
+  node.y = Math.max(6, Math.min(94, nextY));
+  node.vx = 0;
+  node.vy = 0;
+}
+
+function renderContextList(container, title, refs) {
+  if (!refs.length) return;
+  const section = document.createElement('section');
+  section.className = 'context-list';
+  section.innerHTML = `<h4>${escapeHtml(title)}</h4>`;
+  const list = document.createElement('ol');
+  refs.forEach((ref) => {
+    const li = document.createElement('li');
+    const url = literatureUrl(ref);
+    li.innerHTML = `
+      <strong>${escapeHtml(ref.title || '[待補題名]')}</strong>
+      <span>${escapeHtml(metaLine(ref) || ref.source || '')}</span>
+      ${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">前往來源</a>` : ''}
+    `;
+    list.appendChild(li);
+  });
+  section.appendChild(list);
+  container.appendChild(section);
 }
 
 async function clientDiscover(value) {
   const inferred = clientInferKind(value);
   const query = inferred.value;
+  const scope = selectedSearchScope();
+  inferred.conditions = parseSearchConditions(query);
+  if (inferred.kind === 'footnote') {
+    const candidates = rankCandidates(clientParseFootnotes(query), query, [query], 'footnote');
+    const best = candidates[0] || clientParseFootnotes(query)[0];
+    return {
+      input: value,
+      inferred: { ...inferred, variants: [query] },
+      best,
+      candidates,
+      conflicts: [],
+      missing: missingFields(best),
+      routes: verificationRoutes(best?.title || query, [query]),
+    };
+  }
+  const variants = conditionSearchQueries(query, inferred);
+  inferred.variants = variants;
+  const authorVariantLimit = inferred.conditions?.hasStructuredConditions ? 5 : 10;
+  const primaryVariants = variants.slice(0, inferred.kind === 'author' ? authorVariantLimit : 3);
   const jobs = inferred.kind === 'doi'
     ? [clientCrossrefDoi(query), clientOpenAlexDoi(query), clientDataCiteDoi(query)]
-    : [
-      clientCrossrefQuery(query),
-      clientCrossrefAuthorQuery(query),
-      clientOpenAlexQuery(query),
-      clientOpenAlexAuthorQuery(query),
-      clientSemanticAuthorQuery(query),
-      clientDataCiteQuery(query),
-      clientEuropePmcQuery(query),
-      clientPubMedQuery(query),
-      clientDoajQuery(query),
-      clientGoogleBooksQuery(query),
-      clientOpenLibraryQuery(query),
-      clientLibraryOfCongressQuery(query),
-    ];
+    : inferred.kind === 'isbn'
+      ? [clientGoogleBooksQuery(query), clientOpenLibraryQuery(query), clientCrossrefQuery(query), clientOpenAlexQuery(query)]
+      : primaryVariants.flatMap((variant, index) => {
+        const common = [
+          clientOpenAlexQuery(variant),
+          clientCrossrefQuery(variant),
+          clientDataCiteQuery(variant),
+          clientEuropePmcQuery(variant),
+          clientPubMedQuery(variant),
+          clientDoajQuery(variant),
+        ];
+        const authorJobs = [
+          clientOpenAlexAuthorQuery(variant),
+          clientCrossrefAuthorQuery(variant),
+          clientSemanticAuthorQuery(variant),
+          clientGoogleBooksAuthorQuery(variant),
+        ];
+        const bookJobs = index < 2 ? [clientGoogleBooksQuery(variant), clientOpenLibraryQuery(variant), clientLibraryOfCongressQuery(variant)] : [];
+        const scopedCommon = scope === 'book' ? common.slice(0, 2) : common;
+        const conditionJobs = index === 0 && inferred.conditions?.hasStructuredConditions
+          ? [clientOpenAlexQuery(variant), clientCrossrefQuery(variant)]
+          : [];
+        const scopedBookJobs = scope === 'article' ? [] : bookJobs;
+        const scopedAuthorJobs = scope === 'book' ? authorJobs.slice(3) : scope === 'article' ? authorJobs.slice(0, 3) : authorJobs;
+        return inferred.kind === 'author' ? [...conditionJobs, ...scopedAuthorJobs, ...scopedCommon, ...scopedBookJobs] : [...conditionJobs, ...scopedCommon, ...scopedAuthorJobs.slice(0, 1), ...scopedBookJobs];
+      });
   const settled = await Promise.allSettled(jobs);
-  const candidates = dedupeItems(settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : [])))
-    .filter((item) => item.title || item.doi || item.isbn)
-    .map((item) => ({ ...item, missing: missingFields(item), routes: verificationRoutes(item.title || query) }))
-    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0));
-  const best = candidates[0] || {
+  const manualSeedAllowed = inferred.kind !== 'author';
+  const seed = {
     source: 'Manual',
-    type: 'article',
-    title: query,
-    authors: [],
-    year: '',
+    sourcePriority: 40,
+    type: scope === 'book' ? 'book' : 'article',
+    title: manualSeedAllowed ? toTraditional(query) : '',
+    authors: inferred.kind === 'author' ? [toTraditional(inferred.conditions?.author || query)] : [],
+    year: inferred.conditions?.years?.[0] || '',
     confidence: 30,
     sourceInput: query,
-    routes: verificationRoutes(query),
+  };
+  const candidates = rankCandidates(
+    expandWithLocalMetadataHints([...(manualSeedAllowed ? [seed] : []), ...settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))]),
+    query,
+    variants,
+    inferred.kind,
+  );
+  const scopedCandidates = candidates
+    .filter((item) => sourceScopeMatches(item, scope))
+    .filter((item) => isDisplayableCandidate(item, inferred.kind));
+  const best = scopedCandidates[0] || candidates[0] || {
+    source: 'Manual',
+    type: scope === 'book' ? 'book' : 'article',
+    title: manualSeedAllowed ? toTraditional(query) : '',
+    authors: inferred.kind === 'author' ? [toTraditional(inferred.conditions?.author || query)] : [],
+    year: inferred.conditions?.years?.[0] || '',
+    confidence: 30,
+    sourceInput: query,
+    routes: verificationRoutes(query, variants),
   };
   return {
     input: value,
     inferred,
+    searchScope: scope,
     best,
-    candidates,
+    candidates: scopedCandidates.length ? scopedCandidates : candidates,
     conflicts: [],
     missing: missingFields(best),
-    routes: verificationRoutes(best.title || query),
+    routes: verificationRoutes(best.title || query, variants),
   };
 }
 
@@ -1421,7 +2601,9 @@ function clientInferKind(inputValue) {
   const isbn = value.replace(/[-\s]/g, '').match(/^(97[89])?\d{9}[\dXx]$/);
   if (isbn) return { kind: 'isbn', value: value.replace(/[^\dXx]/g, '') };
   if (/^https?:\/\//i.test(value)) return { kind: 'url', value };
-  return { kind: 'query', value };
+  if (/\n/.test(value) || /\bIbid\.|\bibid\.|同前註|同註|前引書|頁\s*\d|pp?\./i.test(value)) return { kind: 'footnote', value };
+  const kind = searchIntentFromValue(value, { kind: 'query' });
+  return { kind, value };
 }
 
 async function externalJson(url) {
@@ -1438,7 +2620,7 @@ async function clientCrossrefDoi(doi) {
 async function clientCrossrefQuery(query) {
   const url = new URL('https://api.crossref.org/works');
   url.searchParams.set('query.bibliographic', query);
-  url.searchParams.set('rows', '6');
+  url.searchParams.set('rows', '20');
   const data = await externalJson(url);
   return (data.message?.items || []).map(clientCrossrefMap);
 }
@@ -1446,9 +2628,16 @@ async function clientCrossrefQuery(query) {
 async function clientCrossrefAuthorQuery(query) {
   const url = new URL('https://api.crossref.org/works');
   url.searchParams.set('query.author', query);
-  url.searchParams.set('rows', '10');
+  url.searchParams.set('rows', '30');
   const data = await externalJson(url);
   return (data.message?.items || []).map(clientCrossrefMap);
+}
+
+async function fetchSemanticByDoi(doi) {
+  const url = new URL(`https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(doi)}`);
+  url.searchParams.set('fields', 'paperId,title,authors,year,venue,journal,externalIds,url');
+  const data = await externalJson(url);
+  return data?.title ? [clientSemanticPaperMap(data)] : [];
 }
 
 function clientCrossrefMap(work) {
@@ -1482,7 +2671,7 @@ async function clientOpenAlexDoi(doi) {
 async function clientOpenAlexQuery(query) {
   const url = new URL('https://api.openalex.org/works');
   url.searchParams.set('search', query);
-  url.searchParams.set('per-page', '6');
+  url.searchParams.set('per-page', '20');
   const data = await externalJson(url);
   return (data.results || []).map(clientOpenAlexMap);
 }
@@ -1490,19 +2679,26 @@ async function clientOpenAlexQuery(query) {
 async function clientOpenAlexAuthorQuery(query) {
   const authorsUrl = new URL('https://api.openalex.org/authors');
   authorsUrl.searchParams.set('search', query);
-  authorsUrl.searchParams.set('per-page', '2');
+  authorsUrl.searchParams.set('per-page', '5');
   const authors = await externalJson(authorsUrl);
   const authorIds = (authors.results || [])
     .filter((author) => author.display_name && authorNameMatches(author.display_name, query))
     .map((author) => String(author.id || '').split('/').pop())
     .filter(Boolean);
   const workJobs = authorIds.map(async (authorId) => {
-    const worksUrl = new URL('https://api.openalex.org/works');
-    worksUrl.searchParams.set('filter', `author.id:${authorId}`);
-    worksUrl.searchParams.set('sort', 'cited_by_count:desc');
-    worksUrl.searchParams.set('per-page', '12');
-    const works = await externalJson(worksUrl);
-    return (works.results || []).map(clientOpenAlexMap);
+    const byCites = new URL('https://api.openalex.org/works');
+    byCites.searchParams.set('filter', `author.id:${authorId}`);
+    byCites.searchParams.set('sort', 'cited_by_count:desc');
+    byCites.searchParams.set('per-page', '30');
+    const byDate = new URL('https://api.openalex.org/works');
+    byDate.searchParams.set('filter', `author.id:${authorId}`);
+    byDate.searchParams.set('sort', 'publication_date:desc');
+    byDate.searchParams.set('per-page', '50');
+    const [citedWorks, newestWorks] = await Promise.all([
+      externalJson(byCites).catch(() => ({ results: [] })),
+      externalJson(byDate).catch(() => ({ results: [] })),
+    ]);
+    return [...(citedWorks.results || []), ...(newestWorks.results || [])].map(clientOpenAlexMap);
   });
   return (await Promise.all(workJobs)).flat();
 }
@@ -1536,13 +2732,13 @@ function clientOpenAlexMap(work) {
 async function clientSemanticAuthorQuery(query) {
   const url = new URL('https://api.semanticscholar.org/graph/v1/author/search');
   url.searchParams.set('query', query);
-  url.searchParams.set('limit', '3');
+  url.searchParams.set('limit', '5');
   url.searchParams.set('fields', 'name,paperCount,papers.paperId,papers.title,papers.authors,papers.year,papers.venue,papers.externalIds,papers.url');
   const data = await externalJson(url);
   return (data.data || [])
     .filter((author) => authorNameMatches(author.name || '', query))
-    .slice(0, 2)
-    .flatMap((author) => (author.papers || []).slice(0, 16).map((paper) => ({
+    .slice(0, 4)
+    .flatMap((author) => (author.papers || []).slice(0, 40).map((paper) => ({
       source: 'Semantic Scholar',
       type: 'article',
       title: normalizeText(paper.title || ''),
@@ -1556,12 +2752,22 @@ async function clientSemanticAuthorQuery(query) {
     })));
 }
 
+async function clientSemanticQuery(query) {
+  const url = new URL('https://api.semanticscholar.org/graph/v1/paper/search');
+  url.searchParams.set('query', query);
+  url.searchParams.set('limit', '20');
+  url.searchParams.set('fields', 'paperId,title,authors,year,venue,journal,externalIds,url');
+  const data = await externalJson(url);
+  return (data.data || []).map(clientSemanticPaperMap);
+}
+
 function authorNameMatches(name, query) {
-  const normalize = (value) => normalizeText(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-  const cleanName = normalize(name);
-  const tokens = normalizeText(query).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
-  if (!tokens.length) return false;
-  return tokens.every((token) => cleanName.includes(normalize(token)));
+  const cleanName = compactSearchText(name);
+  const variants = expandSearchQueries(query, { kind: 'author' }).map(compactSearchText).filter(Boolean);
+  if (!variants.length) return false;
+  if (variants.some((variant) => cleanName.includes(variant) || variant.includes(cleanName))) return true;
+  const tokens = toTraditional(query).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
+  return tokens.length > 0 && tokens.every((token) => cleanName.includes(compactSearchText(token)));
 }
 
 async function clientDataCiteDoi(doi) {
@@ -1681,24 +2887,56 @@ async function clientGoogleBooksQuery(query) {
   url.searchParams.set('q', query);
   url.searchParams.set('maxResults', '6');
   const data = await externalJson(url);
-  return (data.items || []).map((volume) => {
-    const info = volume.volumeInfo || {};
-    const published = normalizeText(info.publishedDate || '');
-    return {
-      source: 'Google Books',
-      type: 'book',
-      title: normalizeText(info.title || ''),
-      subtitle: normalizeText(info.subtitle || ''),
-      authors: (info.authors || []).map(normalizeText).filter(Boolean),
-      year: published.match(/\d{4}/)?.[0] || '',
-      issued: published,
-      publisher: normalizeText(info.publisher || ''),
-      isbn: normalizeText(info.industryIdentifiers?.find((id) => /ISBN/.test(id.type))?.identifier || ''),
-      url: normalizeText(info.infoLink || info.canonicalVolumeLink || ''),
-      language: normalizeText(info.language || ''),
-      confidence: 76,
-    };
-  });
+  return (data.items || []).map(clientGoogleBookMap);
+}
+
+async function clientGoogleBooksAuthorQuery(query) {
+  const url = new URL('https://www.googleapis.com/books/v1/volumes');
+  url.searchParams.set('q', `inauthor:${query}`);
+  url.searchParams.set('maxResults', '20');
+  const data = await externalJson(url);
+  return (data.items || []).map(clientGoogleBookMap);
+}
+
+async function clientOpenLibraryIsbn(isbn) {
+  const clean = normalizeText(isbn).replace(/[^\dXx]/g, '');
+  if (!clean) return [];
+  const data = await externalJson(`https://openlibrary.org/isbn/${encodeURIComponent(clean)}.json`);
+  if (!data?.title) return [];
+  return [{
+    source: 'Open Library',
+    type: 'book',
+    title: normalizeText(data.title || ''),
+    subtitle: normalizeText(data.subtitle || ''),
+    authors: (data.authors || []).map((author) => normalizeText(author.name || author.key || '')).filter(Boolean),
+    year: normalizeText(data.publish_date || '').match(/\d{4}/)?.[0] || '',
+    issued: normalizeText(data.publish_date || ''),
+    publisher: normalizeText(Array.isArray(data.publishers) ? data.publishers[0] : data.publishers),
+    place: normalizeText(Array.isArray(data.publish_places) ? data.publish_places[0] : data.publish_places),
+    isbn: clean,
+    url: `https://openlibrary.org/isbn/${clean}`,
+    language: normalizeText(Array.isArray(data.languages) ? data.languages[0]?.key || data.languages[0] : ''),
+    confidence: 78,
+  }];
+}
+
+function clientGoogleBookMap(volume) {
+  const info = volume.volumeInfo || {};
+  const published = normalizeText(info.publishedDate || '');
+  return {
+    source: 'Google Books',
+    type: 'book',
+    title: normalizeText(info.title || ''),
+    subtitle: normalizeText(info.subtitle || ''),
+    authors: (info.authors || []).map(normalizeText).filter(Boolean),
+    year: published.match(/\d{4}/)?.[0] || '',
+    issued: published,
+    publisher: normalizeText(info.publisher || ''),
+    isbn: normalizeText(info.industryIdentifiers?.find((id) => /ISBN/.test(id.type))?.identifier || ''),
+    url: normalizeText(info.infoLink || info.canonicalVolumeLink || ''),
+    language: normalizeText(info.language || ''),
+    confidence: 76,
+  };
 }
 
 async function clientOpenLibraryQuery(query) {
@@ -1713,6 +2951,7 @@ async function clientOpenLibraryQuery(query) {
     authors: (doc.author_name || []).map(normalizeText).filter(Boolean),
     year: doc.first_publish_year ? String(doc.first_publish_year) : '',
     publisher: normalizeText(Array.isArray(doc.publisher) ? doc.publisher[0] : doc.publisher),
+    place: normalizeText(Array.isArray(doc.publish_place) ? doc.publish_place[0] : doc.publish_place),
     isbn: normalizeText(Array.isArray(doc.isbn) ? doc.isbn[0] : doc.isbn),
     url: doc.key ? `https://openlibrary.org${doc.key}` : '',
     language: normalizeText(Array.isArray(doc.language) ? doc.language[0] : doc.language),
@@ -1726,19 +2965,25 @@ async function clientLibraryOfCongressQuery(query) {
   url.searchParams.set('q', query);
   url.searchParams.set('c', '8');
   const data = await externalJson(url);
-  return (data.results || []).map((record) => ({
-    source: 'Library of Congress',
-    type: 'book',
-    title: normalizeText(record.title || ''),
-    authors: normalizeAuthorList(Array.isArray(record.contributor) ? record.contributor.join('; ') : record.contributor || ''),
-    year: normalizeText(String(record.date || '').match(/\b(18|19|20)\d{2}\b/)?.[0] || ''),
-    issued: normalizeText(record.date || ''),
-    publisher: normalizeText(Array.isArray(record.publisher) ? record.publisher[0] : record.publisher || ''),
-    place: normalizeText(Array.isArray(record.location) ? record.location[0] : record.location || ''),
-    url: normalizeText(record.url || ''),
-    language: normalizeText(Array.isArray(record.language) ? record.language[0] : record.language || ''),
-    confidence: 70,
-  }));
+  return (data.results || []).map((record) => {
+    const createdPublished = normalizeText(Array.isArray(record.item?.created_published) ? record.item.created_published[0] : record.item?.created_published || '');
+    const split = splitPlacePublisher(createdPublished || (Array.isArray(record.publisher) ? record.publisher[0] : record.publisher || ''));
+    const publisher = normalizeText(Array.isArray(record.publisher) ? record.publisher[0] : record.publisher || split.publisher);
+    return {
+      source: 'Library of Congress',
+      type: 'book',
+      title: normalizeText(record.title || ''),
+      authors: normalizeAuthorList(Array.isArray(record.contributor) ? record.contributor.join('; ') : record.contributor || ''),
+      year: normalizeText(String(record.date || createdPublished).match(/\b(18|19|20)\d{2}\b/)?.[0] || ''),
+      issued: normalizeText(record.date || createdPublished),
+      publisher: split.publisher || publisher,
+      place: normalizeText(Array.isArray(record.location) ? record.location[0] : record.location || split.place || placeFromPublisher(publisher)),
+      url: normalizeText(record.url || ''),
+      language: normalizeText(Array.isArray(record.language) ? record.language[0] : record.language || ''),
+      raw: { createdPublished },
+      confidence: 72,
+    };
+  });
 }
 
 function clientParseFootnotes(text) {
@@ -1760,6 +3005,190 @@ function clientParseFootnotes(text) {
     }));
 }
 
+function toTraditional(value = '') {
+  let text = String(value || '');
+  simplifiedPhraseMap.forEach(([simp, trad]) => {
+    text = text.split(simp).join(trad);
+  });
+  return [...text].map((char) => simplifiedCharMap[char] || char).join('');
+}
+
+function toSimplified(value = '') {
+  let text = String(value || '');
+  traditionalPhraseMap.forEach(([trad, simp]) => {
+    text = text.split(trad).join(simp);
+  });
+  return [...text].map((char) => traditionalCharMap[char] || char).join('');
+}
+
+function toTraditionalItem(item = {}) {
+  if (!shouldUseTraditionalOutput()) return { ...item };
+  const convert = (value) => (typeof value === 'string' ? toTraditional(value) : value);
+  return {
+    ...item,
+    title: convert(item.title),
+    subtitle: convert(item.subtitle),
+    authors: Array.isArray(item.authors) ? item.authors.map(convert) : [],
+    containerTitle: convert(item.containerTitle),
+    publisher: convert(item.publisher),
+    place: convert(item.place),
+    language: convert(item.language),
+    sourceInput: convert(item.sourceInput),
+    original: convert(item.original),
+  };
+}
+
+function hasCjk(value = '') {
+  return /[\u3400-\u9fff]/u.test(value);
+}
+
+function compactSearchText(value = '') {
+  return toTraditional(normalizeText(value)).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function searchBlob(item = {}) {
+  return compactSearchText([
+    item.title,
+    item.subtitle,
+    item.containerTitle,
+    item.publisher,
+    item.year,
+    ...(item.authors || []),
+  ].filter(Boolean).join(' '));
+}
+
+function expandSearchQueries(query, inferred = {}) {
+  const original = normalizeText(query);
+  const trad = toTraditional(original);
+  const simp = toSimplified(trad);
+  const aliases = knownAuthorAliases[trad] || knownAuthorAliases[original] || [];
+  const compact = hasCjk(trad) ? trad.replace(/\s+/g, '') : '';
+  return [...new Set([original, trad, simp, compact, ...aliases].map(normalizeText).filter(Boolean))];
+}
+
+function searchIntentFromValue(value, inferred = {}) {
+  if (inferred.kind && inferred.kind !== 'query') return inferred.kind;
+  const text = normalizeText(value);
+  const conditions = parseSearchConditions(text);
+  if (conditions.hasStructuredConditions && conditions.author) return 'author';
+  const compact = text.replace(/[^\p{L}\p{N}]+/gu, '');
+  if (hasCjk(text) && compact.length >= 2 && compact.length <= 5 && !/[《〈「“:：,，.。]/u.test(text)) return 'author';
+  if (!hasCjk(text) && /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+){1,3}$/u.test(text)) return 'author';
+  if (text.length > 14 || /[《〈「“:：,，.。]/u.test(text)) return 'title';
+  return 'query';
+}
+
+function authorCandidateMatches(item, variants) {
+  const authors = (item.authors || []).map(compactSearchText);
+  const queryKeys = variants.map(compactSearchText).filter(Boolean);
+  return authors.some((author) => queryKeys.some((query) => authorKeyMatches(author, query)));
+}
+
+function authorKeyMatches(author, query) {
+  if (!author || !query) return false;
+  if (hasCjk(author) || hasCjk(query)) return author.includes(query) || query.includes(author);
+  if (author.includes(query)) return true;
+  return query.includes(author) && author.length >= Math.max(8, Math.floor(query.length * 0.75));
+}
+
+function relevanceForCandidate(item, query, variants, intent) {
+  const blob = searchBlob(item);
+  const keys = variants.map(compactSearchText).filter(Boolean);
+  const conditionScore = scoreSearchConditions(item, query);
+  if (!keys.length) return 20;
+  if (authorCandidateMatches(item, variants)) return Math.min(100, 88 + conditionScore);
+  if (keys.some((key) => key && blob.includes(key))) return Math.min(100, (intent === 'author' ? 72 : 88) + conditionScore);
+  const rawTokens = toTraditional(query).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
+  const matched = rawTokens.filter((token) => blob.includes(compactSearchText(token))).length;
+  const ratio = rawTokens.length ? matched / rawTokens.length : 0;
+  return Math.min(100, Math.round(ratio * (intent === 'author' ? 56 : 70) + conditionScore));
+}
+
+function scoreSearchConditions(item = {}, query = '') {
+  const conditions = parseSearchConditions(query);
+  if (!conditions.hasStructuredConditions) return 0;
+  let score = 0;
+  if (conditions.author && authorCandidateMatches(item, expandSearchQueries(conditions.author, { kind: 'author' }))) score += 18;
+  if (conditions.years.length && item.year && conditions.years.includes(String(item.year))) score += 16;
+  const sourceBlob = compactSearchText([item.containerTitle, item.publisher, item.source, item.title].filter(Boolean).join(' '));
+  const sourceHits = conditions.sourceTerms.filter((term) => sourceBlob.includes(compactSearchText(term))).length;
+  score += sourceHits * 10;
+  const titleBlob = compactSearchText(item.title || '');
+  const titleHits = conditions.titleTerms.filter((term) => titleBlob.includes(compactSearchText(term))).length;
+  score += titleHits * 12;
+  return Math.min(42, score);
+}
+
+function matchesSearchConditions(item = {}, query = '') {
+  const conditions = parseSearchConditions(query);
+  if (!conditions.hasStructuredConditions) return true;
+  if (conditions.author && !authorCandidateMatches(item, expandSearchQueries(conditions.author, { kind: 'author' })) && !searchBlob(item).includes(compactSearchText(conditions.author))) return false;
+  if (conditions.years.length && item.year && !conditions.years.includes(String(item.year))) return false;
+  const sourceBlob = compactSearchText([item.containerTitle, item.publisher, item.source, item.title].filter(Boolean).join(' '));
+  const sourceMismatch = conditions.sourceTerms.length && conditions.sourceTerms.every((term) => !sourceBlob.includes(compactSearchText(term)));
+  if (sourceMismatch && (item.containerTitle || item.publisher)) return false;
+  const titleBlob = compactSearchText(item.title || '');
+  const titleMismatch = conditions.titleTerms.length && conditions.titleTerms.every((term) => !titleBlob.includes(compactSearchText(term)));
+  if (titleMismatch && item.title) return false;
+  return true;
+}
+
+function rankCandidates(list, query, variants, intent) {
+  const prepared = list
+    .filter((item) => item.title || item.doi || item.isbn)
+    .filter(isAllowedDefaultCandidate)
+    .map((item) => {
+      const relevance = relevanceForCandidate(item, query, variants, intent);
+      const base = Number(item.confidence || 55);
+      const authorBoost = intent === 'author' && authorCandidateMatches(item, variants) ? 18 : 0;
+      const confidence = Math.max(20, Math.min(99, Math.round(base * 0.42 + relevance * 0.5 + authorBoost)));
+      return {
+        ...toTraditionalItem(item),
+        relevance,
+        confidence,
+        missing: missingFields(item),
+        routes: verificationRoutes(item.title || query, variants),
+      };
+    });
+  const hasStrongAuthor = intent === 'author' && prepared.some((item) => authorCandidateMatches(item, variants));
+  const filtered = prepared.filter((item) => {
+    if (!matchesSearchConditions(item, query)) return false;
+    if (intent === 'author' && hasStrongAuthor) return authorCandidateMatches(item, variants);
+    return item.relevance >= (intent === 'author' ? 8 : 10);
+  });
+  return dedupeItems(filtered).sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0));
+}
+
+function isAllowedDefaultCandidate(item = {}) {
+  const type = String(item.type || '').toLowerCase();
+  const title = normalizeText(item.title || '');
+  const source = normalizeText(item.source || '');
+  const container = normalizeText(item.containerTitle || '');
+  if (/thesis|dissertation|學位|碩士|博士|碩論|博論/i.test([type, title, source, container].join(' '))) return false;
+  if (looksLikeThesisCompositeTitle(title)) return false;
+  if (!type) return true;
+  return /article|journal|book|chapter|monograph|reference|edited_book|posted_content|web/.test(type);
+}
+
+function isDisplayableCandidate(item = {}, intent = 'query') {
+  if (!item || !item.title) return false;
+  const source = normalizeText(item.source || '');
+  if (intent === 'author' && source === 'Manual') return false;
+  const hasDirectTarget = Boolean(item.doi || item.url || item.openAlexId || item.semanticId || item.isbn);
+  const hasBibliographicBody = Boolean(item.containerTitle || item.volume || item.issue || item.pages || item.publisher || item.place);
+  const mostlyEmpty = missingFields(item).length >= 4 && !hasDirectTarget && !hasBibliographicBody;
+  return !mostlyEmpty;
+}
+
+function looksLikeThesisCompositeTitle(title = '') {
+  const clean = normalizeText(title);
+  if (!clean) return false;
+  if (/^[一二三四五六七八九十]、.+[；;]\s*[一二三四五六七八九十]、/u.test(clean)) return true;
+  if (/^I[.、]\s*.+[;；]\s*II[.、]/i.test(clean)) return true;
+  if (clean.length > 80 && /[；;]/u.test(clean) && /研究|鑑定|普查|成分|分析/u.test(clean)) return true;
+  return false;
+}
+
 function normalizeText(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -1773,6 +3202,32 @@ function normalizeAuthorList(value = '') {
 
 function normalizePageText(value = '') {
   return String(value || '').replace(/\s+/g, '').replace(/[–—]/g, '-').replace(/^pp?\.\s*/i, '').replace(/^頁\s*/u, '');
+}
+
+function splitPlacePublisher(value = '') {
+  const clean = normalizeText(value).replace(/\s*\b(c|©)\d{4}\b\.?$/i, '').replace(/,\s*\d{4}\.?$/, '').trim();
+  const match = clean.match(/^([^:：]+?)\s*[:：]\s*(.+)$/);
+  if (!match) return { place: '', publisher: clean };
+  return {
+    place: normalizePlace(match[1]),
+    publisher: normalizeText(match[2].replace(/,\s*\d{4}\.?$/, '')),
+  };
+}
+
+function placeFromPublisher(value = '') {
+  const text = normalizeText(value);
+  const hit = publisherPlaceHints.find(([pattern]) => pattern.test(text));
+  return hit ? hit[1] : '';
+}
+
+function normalizePlace(value = '') {
+  return normalizeText(value)
+    .replace(/\b[Tt]aipei(?:\s*City)?\b/g, '臺北')
+    .replace(/\b[Tt]aoyuan\b/g, '桃園')
+    .replace(/\b[Kk]aohsiung\b/g, '高雄')
+    .replace(/[,\s]+Taiwan\.?$/i, '')
+    .replace(/[，,]\s*臺灣$/, '')
+    .replace(/\s*市$/u, '');
 }
 
 async function getJson(url) {
@@ -1789,6 +3244,18 @@ async function copyText(text) {
   } catch {
     return false;
   }
+}
+
+function openExternalUrl(url) {
+  if (!url) return false;
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (opened) {
+    try {
+      opened.opener = null;
+    } catch {}
+    return true;
+  }
+  return false;
 }
 
 async function postJson(url, payload) {
@@ -1830,8 +3297,7 @@ function escapeHtml(value) {
 window.addEventListener('DOMContentLoaded', () => {
   if (window.lucide) window.lucide.createIcons();
   setTheme(sessionStorage.getItem('cookie-theme') || 'light');
-  googleClientInput.value = hasFirebaseConfig() ? firebaseConfig.projectId : '';
-  if (hasFirebaseConfig()) initGoogleAuth().catch((error) => setStorageNotice(`Firebase 初始化失敗：${error.message}`));
+  if (storageMode) storageMode.textContent = '瀏覽器暫存';
   loadLibrary();
   render();
 });
